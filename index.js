@@ -127,12 +127,16 @@ app.post('/sso', async (req, res) => {
     </saml:AuthnStatement>
 </saml:Assertion>`;
 
-    // Ký số chuẩn bằng xml-crypto với crypto.createPrivateKey
-    const sig = new SignedXml();
-    sig.signingKey = crypto.createPrivateKey({
+      // Ký số chuẩn bằng xml-crypto với crypto.createPrivateKey
+      
+      const privateKeyObj = crypto.createPrivateKey({
       key: privateKeyRaw,
-      format: 'pem'
-    });
+      format: 'pem',
+      type: 'pkcs8' // Hoặc 'sec1' nếu dùng ec, với rsa mặc định pkcs8 / pkcs1 đều hỗ trợ
+      });
+      
+    const sig = new SignedXml();
+    sig.signingKey = privateKeyObj;
     sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
     sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
     
