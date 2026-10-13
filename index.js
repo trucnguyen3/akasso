@@ -82,6 +82,12 @@ const APPSFLYER_SP_ENTITY_ID = String(
 const PRIVATE_KEY_PATH = path.join(__dirname, 'key.pem');
 const CERTIFICATE_PATH = path.join(__dirname, 'cert.pem');
 
+function getClientIp(req) {
+  // Chỉ tin header proxy nếu bạn đã cấu hình
+  // Express trust proxy đúng với reverse proxy của mình.
+  return req.ip?.replace(/^::ffff:/, "");
+}
+
 const allowedIps = new Set(
   (process.env.SSO_ALLOWED_IPS || "")
     .split(",")
