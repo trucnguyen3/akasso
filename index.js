@@ -267,6 +267,12 @@ app.get('/health', (_req, res) => {
 // authentication thật của công ty.
 
 app.get('/sso', (req, res) => {
+    console.log('[SSO GET]', {
+    url: req.originalUrl.split('?')[0],
+    hasSAMLRequest: Boolean(req.query.SAMLRequest),
+    hasRelayState: Boolean(req.query.RelayState)
+    });
+    
   const SAMLRequest =
     typeof req.query.SAMLRequest === 'string'
       ? req.query.SAMLRequest
@@ -275,7 +281,17 @@ app.get('/sso', (req, res) => {
   const RelayState =
     typeof req.query.RelayState === 'string'
       ? req.query.RelayState
-      : '';
+            : '';
+    
+    if (!SAMLRequest) {
+  console.error(
+    '[SSO GET] Missing SAMLRequest. Check SAML binding and IdP SSO URL.'
+  );
+
+  return res.status(400).send(
+    'Missing SAMLRequest. Please start SSO from AppsFlyer.'
+  );
+}
 
   res.type('html').send(`<!doctype html>
 <html lang="vi">
