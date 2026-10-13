@@ -24,8 +24,7 @@ try {
     callbackUrl: IDP_SSO_URL,
   });
 
-// 1. Endpoint Metadata (có /sso-idp/metadata)
-  app.get('/sso-idp/metadata', (req, res) => {
+app.get('/metadata', (req, res) => {
     try {
       const certClean = certificate
         .replace(/-----(BEGIN|END) CERTIFICATE-----/g, '')
@@ -49,17 +48,16 @@ try {
     </md:IDPSSODescriptor>
 </md:EntityDescriptor>`);
     } catch (err) {
-      console.error('[Error] /sso-idp/metadata:', err);
+      console.error('[Error] /metadata:', err);
       res.status(500).send('Internal Error');
     }
   });
 
-  // 2. Giao diện Login (có /sso-idp/sso)
-  app.get('/sso-idp/sso', (req, res) => {
+  // 2. Giao diện Login (bỏ /sso-idp đi)
+  app.get('/sso', (req, res) => {
     const { SAMLRequest, RelayState } = req.query;
-    console.log('[Request] Nhận được GET /sso-idp/sso, SAMLRequest:', SAMLRequest ? 'Có' : 'Không có');
     res.send(`
-      <form method="POST" action="/sso-idp/sso" style="margin: 100px auto; width: 320px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px;">
+      <form method="POST" action="/sso" style="margin: 100px auto; width: 320px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px;">
         <h3 style="text-align: center;">AKA Digital SSO</h3>
         <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
         <input type="hidden" name="RelayState" value="${RelayState || ''}" />
@@ -75,17 +73,15 @@ try {
     `);
   });
 
-  // 3. Xử lý trả SAML Token (có /sso-idp/sso POST)
-  app.post('/sso-idp/sso', async (req, res) => {
+  // 3. Xử lý trả SAML Token (bỏ /sso-idp đi)
+  app.post('/sso', async (req, res) => {
     const { SAMLRequest, RelayState, username } = req.body;
     const userEmail = `${(username || 'admin').trim()}@akadigital.vn`;
-    console.log(`[Process] Đang tạo SAML response cho user: ${userEmail}`);
 
     try {
       const extractedRequest = await samlIdp.parseLoginRequest({
         query: { SAMLRequest }
       });
-      console.log('[Process] Parse Login Request thành công, ACS URL:', extractedRequest.acsUrl);
 
       const options = {
         issuer: IDP_ENTITY_ID,
@@ -100,12 +96,8 @@ try {
       };
 
       samlIdp.getSamlResponse(options, (err, samlResponse) => {
-        if (err) {
-          console.error('[Error] getSamlResponse failed:', err);
-          return res.status(500).send('Lỗi tạo token: ' + err.message);
-        }
+        if (err) return res.status(500).send('Lỗi tạo token: ' + err.message);
 
-        console.log('[Success] Tạo SAML Response thành công, đang gửi về AppsFlyer...');
         res.send(`
           <html>
             <body onload="document.forms[0].submit()">
@@ -119,7 +111,6 @@ try {
         `);
       });
     } catch (error) {
-      console.error('[Error catch POST /sso-idp/sso]:', error);
       res.status(500).send('Lỗi xử lý SAML Request: ' + error.message);
     }
   });
