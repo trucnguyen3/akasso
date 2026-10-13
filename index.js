@@ -121,18 +121,14 @@ try {
       sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
       sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
       
-      sig.addReference(
-        `//*[@ID='${assertionId}']`,
-        [
+      sig.addReference({
+        xpath: `//*[@ID='${assertionId}']`,
+        transforms: [
           'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
           'http://www.w3.org/2001/10/xml-exc-c14n#'
         ],
-        'http://www.w3.org/2001/04/xmlenc#sha256',
-        '',
-        '',
-        '',
-        true
-      );
+        digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256'
+      });
 
       sig.keyInfoProvider = {
         getKeyInfo: () => `<ds:X509Data><ds:X509Certificate>${certClean}</ds:X509Certificate></ds:X509Data>`
