@@ -576,7 +576,7 @@ app.post('/sso', async (req, res) => {
   Destination="${acsXml}"
   InResponseTo="${requestIdXml}">
 
-  <saml:Issuer>${idpEntityXml}</saml:Issuer>
+  <saml:Issuer>${IDP_PUBLIC_URL}</saml:Issuer>
 
   <samlp:Status>
     <samlp:StatusCode
@@ -590,7 +590,7 @@ app.post('/sso', async (req, res) => {
     Version="2.0"
     IssueInstant="${issueInstant}">
 
-    <saml:Issuer>${idpEntityXml}</saml:Issuer>
+    <saml:Issuer>${IDP_PUBLIC_URL}</saml:Issuer>
 
     <saml:Subject>
       <saml:NameID
