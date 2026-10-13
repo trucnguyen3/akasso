@@ -95,7 +95,7 @@ try {
       const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
       // Tạo Assertion XML cần ký số
-      const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
+const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
     <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
     <saml:Subject>
         <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${userEmail}</saml:NameID>
@@ -116,7 +116,7 @@ try {
 </saml:Assertion>`;
 
       // Thực hiện ký số Assertion bằng xml-crypto
-      const sig = new SignedXml();
+    const sig = new SignedXml();
       sig.signingKey = privateKey;
       sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
       sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
@@ -134,16 +134,17 @@ try {
         getKeyInfo: () => `<ds:X509Data><ds:X509Certificate>${certClean}</ds:X509Certificate></ds:X509Data>`
       };
 
-      sig.computeSignature(assertionXml, {
-        prefix: 'ds',
-        location: {
-          reference: "//*[local-name(p)='Assertion']/*[local-name(p)='Issuer']",
-          action: "after"
-        }
-      });
+      // Gọi computeSignature đơn giản không cần truyền location phức tạp, 
+      // xml-crypto sẽ tự động chèn chữ ký vào phần tử gốc được reference.
+      sig.computeSignature(assertionXml);
       
       const signedAssertion = sig.getSignatureXml();
-      const finalAssertion = assertionXml.replace('</saml:Assertion>', `${signedAssertion}</saml:Assertion>`);
+
+      // Chèn trực tiếp chữ ký vào ngay sau thẻ Issuer trong Assertion
+      const finalAssertion = assertionXml.replace(
+        `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>`, 
+        `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>${signedAssertion}`
+      );
 
       // Gói vào Response chính
       const samlResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
