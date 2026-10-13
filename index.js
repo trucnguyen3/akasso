@@ -102,7 +102,6 @@ app.post('/sso', async (req, res) => {
   }
 });
 
-// Chạy ở Port 1060
 app.listen(1060, () => {
   console.log('AKA Digital SAML IdP running on port 1060');
 });
