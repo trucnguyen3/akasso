@@ -12,6 +12,6 @@
     "@node-saml/node-saml": "^5.1.0",
     "body-parser": "^2.3.0",
     "express": "^5.3.0",
-    "xml-crypto": "^6.3.3"
+    "saml-idp": "^1.2.1"
   }
 }
