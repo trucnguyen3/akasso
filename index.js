@@ -17,8 +17,8 @@ try {
 
   const samlIdp = new SAML({
     issuer: IDP_ENTITY_ID,
-    cert: certificate,
-    key: privateKey,
+    idpCert: certificate,     // Đổi từ 'cert' thành 'idpCert'
+    privateKey: privateKey,    // Giữ nguyên privateKey để ký Assertion
     digestAlgorithm: 'sha256',
     signatureAlgorithm: 'rsa-sha256',
     callbackUrl: IDP_SSO_URL,
