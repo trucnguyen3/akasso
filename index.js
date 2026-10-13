@@ -4,13 +4,22 @@ const fs = require('fs');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { SignedXml } = require('xml-crypto');
+const path = require('path');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 
 try {
-  const privateKey = fs.readFileSync('./key.pem', 'utf8');
-  const certificate = fs.readFileSync('./cert.pem', 'utf8');
+const privateKeyPath = path.join(__dirname, 'key.pem');
+  const certificatePath = path.join(__dirname, 'cert.pem');
+
+  const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
+  const certificate = fs.readFileSync(certificatePath, 'utf8');
+
+  if (!privateKey) {
+    throw new Error("Không đọc được nội dung file key.pem!");
+  }
+  console.log('[Init] Đã nạp thành công Private Key và Certificate.');
 
   const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
   const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
