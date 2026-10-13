@@ -267,11 +267,12 @@ app.get('/health', (_req, res) => {
 // authentication thật của công ty.
 
 app.get('/sso', (req, res) => {
-    console.log('[SSO GET]', {
-    url: req.originalUrl.split('?')[0],
-    hasSAMLRequest: Boolean(req.query.SAMLRequest),
-    hasRelayState: Boolean(req.query.RelayState)
-    });
+console.log('[SSO GET DEBUG]', {
+  originalUrl: req.originalUrl,
+  queryKeys: Object.keys(req.query),
+  referer: req.get('referer') || '(none)',
+  method: req.method
+});
     
   const SAMLRequest =
     typeof req.query.SAMLRequest === 'string'
