@@ -4,13 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const { SignedXml } = require('xml-crypto');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 
-console.log('[Init] Khởi động Server IdP (Tự động bóc tách Dynamic Audience & Issuer)...');
+console.log('[Init] Khởi động Server IdP (Xml-Crypto Response Signed)...');
 
-// 1. Endpoint Metadata tự động nhận diện domain/URL hiện tại của server
+// 1. Metadata Dynamic
 app.get('/metadata', (req, res) => {
   try {
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
@@ -62,7 +63,7 @@ app.get('/sso', (req, res) => {
   `);
 });
 
-// 3. Xử lý tạo SAML Response với Dynamic Issuer và Dynamic Audience
+// 3. Xử lý SAML Response ký toàn cục bằng xml-crypto
 app.post('/sso', async (req, res) => {
   const { SAMLRequest, RelayState, email } = req.body;
   const userEmail = (email || 'truc.nguyen@akadigital.vn').trim();
@@ -79,11 +80,10 @@ app.post('/sso', async (req, res) => {
     const privateKeyRaw = fs.readFileSync(privateKeyPath, 'utf8');
     const certificate = fs.readFileSync(certificatePath, 'utf8');
 
-    let acsUrl = 'https://hq1.appsflyer.com/auth/sso/saml/callback';
-    let audience = 'https://hq1.appsflyer.com'; // Giá trị mặc định phòng hờ
+    let acsUrl = 'https://hq1.appsflyer.com/auth/sso-callback';
+    let audience = 'https://hq1.appsflyer.com';
     let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
 
-    // Tự động phân tích SAMLRequest để lấy chính xác thông tin từ AppsFlyer gửi sang
     if (SAMLRequest) {
       try {
         const buffer = Buffer.from(SAMLRequest, 'base64');
@@ -91,21 +91,16 @@ app.post('/sso', async (req, res) => {
         try { requestXml = zlib.inflateRawSync(buffer).toString('utf8'); } 
         catch (e) { requestXml = buffer.toString('utf8'); }
 
-        // Bóc tách ACS URL
         const acsMatch = requestXml.match(/AssertionConsumerServiceURL="([^"]+)"/);
         if (acsMatch && acsMatch[1]) acsUrl = acsMatch[1];
 
-        // Bóc tách ID request để gán vào InResponseTo
         const idMatch = requestXml.match(/ID="([^"]+)"/);
         if (idMatch && idMatch[1]) inResponseTo = idMatch[1];
 
-        // Tự động bóc tách Issuer của AppsFlyer để làm Audience (Khỏi cần khai báo cứng)
         const issuerMatch = requestXml.match(/<saml:Issuer[^>]*>(.*?)<\/saml:Issuer>/) || requestXml.match(/<Issuer[^>]*>(.*?)<\/Issuer>/);
-        if (issuerMatch && issuerMatch[1]) {
-          audience = issuerMatch[1].trim();
-        }
+        if (issuerMatch && issuerMatch[1]) audience = issuerMatch[1].trim();
       } catch (err) {
-        console.error('Không parse được SAMLRequest, sử dụng giá trị mặc định');
+        console.error('Không parse được SAMLRequest');
       }
     }
 
@@ -116,67 +111,66 @@ app.post('/sso', async (req, res) => {
     const notOnOrAfter = new Date(now + 600000).toISOString();
     const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
-    // Tạo Assertion XML chuẩn với Audience tự động bóc tách
-const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
-    <saml:Issuer>${idpEntityId}</saml:Issuer>
-    <saml:Subject>
-        <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${userEmail}</saml:NameID>
-        <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
-            <saml:SubjectConfirmationData InResponseTo="${inResponseTo}" NotOnOrAfter="${notOnOrAfter}" Recipient="${acsUrl}"/>
-        </saml:SubjectConfirmation>
-    </saml:Subject>
-    <saml:Conditions NotBefore="${issueInstant}" NotOnOrAfter="${notOnOrAfter}">
-        <saml:AudienceRestriction>
-            <saml:Audience>${audience}</saml:Audience>
-        </saml:AudienceRestriction>
-    </saml:Conditions>
-    <saml:AuthnStatement AuthnInstant="${issueInstant}" SessionIndex="${assertionId}">
-        <saml:AuthnContext>
-            <saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef>
-        </saml:AuthnContext>
-    </saml:AuthnStatement>
-</saml:Assertion>`;
-      
-      const unsignedResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
+    // Tạo XML Response hoàn chỉnh (bao gồm cả AttributeStatement cho AppsFlyer nhận diện user)
+    const xmlUnsigned = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
     <saml:Issuer>${idpEntityId}</saml:Issuer>
     <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
     </samlp:Status>
-    ${assertionXml}
+    <saml:Assertion xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
+        <saml:Issuer>${idpEntityId}</saml:Issuer>
+        <saml:Subject>
+            <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${userEmail}</saml:NameID>
+            <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+                <saml:SubjectConfirmationData InResponseTo="${inResponseTo}" NotOnOrAfter="${notOnOrAfter}" Recipient="${acsUrl}"/>
+            </saml:SubjectConfirmation>
+        </saml:Subject>
+        <saml:Conditions NotBefore="${issueInstant}" NotOnOrAfter="${notOnOrAfter}">
+            <saml:AudienceRestriction>
+                <saml:Audience>${audience}</saml:Audience>
+            </saml:AudienceRestriction>
+        </saml:Conditions>
+        <saml:AuthnStatement AuthnInstant="${issueInstant}" SessionIndex="${assertionId}">
+            <saml:AuthnContext>
+                <saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef>
+            </saml:AuthnContext>
+        </saml:AuthnStatement>
+        <saml:AttributeStatement>
+            <saml:Attribute Name="email" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:basic">
+                <saml:AttributeValue xsi:type="xs:string">${userEmail}</saml:AttributeValue>
+            </saml:Attribute>
+        </saml:AttributeStatement>
+    </saml:Assertion>
 </samlp:Response>`;
 
-    // Ký số trực tiếp bằng module crypto chuẩn (RSA-SHA256)
-const signer = crypto.createSign('RSA-SHA256');
-    signer.update(unsignedResponseXml);
-    signer.end();
-    const signatureValue = signer.sign(privateKeyRaw, 'base64');
-
-    // Gói Response chính
-const samlResponseXml = unsignedResponseXml.replace(
-      `</saml:Issuer>`,
-      `</saml:Issuer>
-    <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
-        <ds:SignedInfo>
-            <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
-            <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
-            <ds:Reference URI="#${responseId}">
-                <ds:Transforms>
-                    <ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
-                    <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
-                </ds:Transforms>
-                <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
-                <ds:DigestValue>${crypto.createHash('sha256').update(unsignedResponseXml).digest('base64')}</ds:DigestValue>
-            </ds:Reference>
-        </ds:SignedInfo>
-        <ds:SignatureValue>${signatureValue}</ds:SignatureValue>
-        <ds:KeyInfo>
-            <ds:X509Data>
-                <ds:X509Certificate>${certClean}</ds:X509Certificate>
-            </ds:X509Data>
-        </ds:KeyInfo>
-    </ds:Signature>`
+    // Cấu hình xml-crypto để ký trực tiếp vào Response ID
+    const privateKeyObj = crypto.createPrivateKey({ key: privateKeyRaw, format: 'pem' });
+    const sig = new SignedXml();
+    sig.signingKey = privateKeyObj;
+    sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
+    sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+    
+    sig.addReference(
+      `#${responseId}`,
+      [
+        'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
+        'http://www.w3.org/2001/10/xml-exc-c14n#'
+      ],
+      'http://www.w3.org/2001/04/xmlenc#sha256'
     );
 
+    sig.keyInfoProvider = {
+      getKeyInfo: () => `<ds:X509Data xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Certificate>${certClean}</ds:X509Certificate></ds:X509Data>`
+    };
+
+    sig.computeSignature(xmlUnsigned, {
+      location: {
+        reference: `/*[local-name(.)='Response']/*[local-name(.)='Issuer']`,
+        action: 'after'
+      }
+    });
+
+    const samlResponseXml = sig.getSignedXml();
     const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
 
     res.send(`
@@ -198,5 +192,5 @@ const samlResponseXml = unsignedResponseXml.replace(
 });
 
 app.listen(1060, () => {
-  console.log('>>> Server IdP (Fully Dynamic) chạy thành công trên port 1060');
+  console.log('>>> Server IdP (Xml-Crypto Response Signed) chạy thành công trên port 1060');
 });
