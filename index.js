@@ -151,7 +151,7 @@ app.post('/sso', async (req, res) => {
     sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
     
     sig.addReference({
-      xpath: `#${responseId}`,
+      xpath: `//*[@ID='${responseId.substring(1)}']`,
       transforms: [
         'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
         'http://www.w3.org/2001/10/xml-exc-c14n#'
