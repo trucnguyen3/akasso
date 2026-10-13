@@ -4,22 +4,21 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
-const xmlEncryption = require('xml-encryption');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
-const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
+console.log('[Init] Khởi động Server IdP (Tự động bóc tách Dynamic Audience & Issuer)...');
 
-const AF_ENTITY_ID = 'https://hq1.appsflyer.com';
-const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso-callback/acc-fbb1a88f';
-
-console.log('[Init] Khởi động Server IdP (Hỗ trợ Ký số & Mã hóa AppsFlyer)...');
-
-// 1. Endpoint Metadata
+// 1. Endpoint Metadata tự động nhận diện domain/URL hiện tại của server
 app.get('/metadata', (req, res) => {
   try {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.get('host');
+    const baseUrl = `${protocol}://${host}`;
+    const idpEntityId = `${baseUrl}/metadata`;
+    const idpSsoUrl = `${baseUrl}/sso`;
+
     const certPath = path.join(__dirname, 'cert.pem');
     const certificate = fs.readFileSync(certPath, 'utf8');
     const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
@@ -28,7 +27,7 @@ app.get('/metadata', (req, res) => {
     res.send(`<?xml version="1.0" encoding="UTF-8"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" 
                      xmlns:ds="http://www.w3.org/2000/09/xmldsig#" 
-                     entityID="${IDP_ENTITY_ID}">
+                     entityID="${idpEntityId}">
     <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
         <md:KeyDescriptor use="signing">
             <ds:KeyInfo>
@@ -37,8 +36,8 @@ app.get('/metadata', (req, res) => {
                 </ds:X509Data>
             </ds:KeyInfo>
         </md:KeyDescriptor>
-        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="${IDP_SSO_URL}"/>
-        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${IDP_SSO_URL}"/>
+        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="${idpSsoUrl}"/>
+        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${idpSsoUrl}"/>
     </md:IDPSSODescriptor>
 </md:EntityDescriptor>`);
   } catch (err) {
@@ -63,23 +62,28 @@ app.get('/sso', (req, res) => {
   `);
 });
 
-// 3. Xử lý tạo SAML Response, Ký số, Mã hóa và gửi về AppsFlyer
+// 3. Xử lý tạo SAML Response với Dynamic Issuer và Dynamic Audience
 app.post('/sso', async (req, res) => {
   const { SAMLRequest, RelayState, email } = req.body;
   const userEmail = (email || 'truc.nguyen@akadigital.vn').trim();
 
   try {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.get('host');
+    const baseUrl = `${protocol}://${host}`;
+    const idpEntityId = `${baseUrl}/metadata`;
+
     const privateKeyPath = path.join(__dirname, 'key.pem');
     const certificatePath = path.join(__dirname, 'cert.pem');
-    const afEncryptionKeyPath = path.join(__dirname, 'ca.pem');
     
     const privateKeyRaw = fs.readFileSync(privateKeyPath, 'utf8');
     const certificate = fs.readFileSync(certificatePath, 'utf8');
-    const afEncryptionKey = fs.readFileSync(afEncryptionKeyPath, 'utf8');
 
-    let acsUrl = AF_ACS_URL;
+    let acsUrl = 'https://hq1.appsflyer.com/auth/sso/saml/callback';
+    let audience = 'https://hq1.appsflyer.com'; // Giá trị mặc định phòng hờ
     let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
 
+    // Tự động phân tích SAMLRequest để lấy chính xác thông tin từ AppsFlyer gửi sang
     if (SAMLRequest) {
       try {
         const buffer = Buffer.from(SAMLRequest, 'base64');
@@ -87,13 +91,21 @@ app.post('/sso', async (req, res) => {
         try { requestXml = zlib.inflateRawSync(buffer).toString('utf8'); } 
         catch (e) { requestXml = buffer.toString('utf8'); }
 
+        // Bóc tách ACS URL
         const acsMatch = requestXml.match(/AssertionConsumerServiceURL="([^"]+)"/);
         if (acsMatch && acsMatch[1]) acsUrl = acsMatch[1];
 
+        // Bóc tách ID request để gán vào InResponseTo
         const idMatch = requestXml.match(/ID="([^"]+)"/);
         if (idMatch && idMatch[1]) inResponseTo = idMatch[1];
+
+        // Tự động bóc tách Issuer của AppsFlyer để làm Audience (Khỏi cần khai báo cứng)
+        const issuerMatch = requestXml.match(/<saml:Issuer[^>]*>(.*?)<\/saml:Issuer>/) || requestXml.match(/<Issuer[^>]*>(.*?)<\/Issuer>/);
+        if (issuerMatch && issuerMatch[1]) {
+          audience = issuerMatch[1].trim();
+        }
       } catch (err) {
-        console.error('Không parse được SAMLRequest, dùng ACS URL mặc định');
+        console.error('Không parse được SAMLRequest, sử dụng giá trị mặc định');
       }
     }
 
@@ -104,9 +116,9 @@ app.post('/sso', async (req, res) => {
     const notOnOrAfter = new Date(now + 600000).toISOString();
     const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
-    // Tạo Assertion XML chuẩn
+    // Tạo Assertion XML chuẩn với Audience tự động bóc tách
     const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
-    <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
+    <saml:Issuer>${idpEntityId}</saml:Issuer>
     <saml:Subject>
         <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${userEmail}</saml:NameID>
         <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
@@ -115,7 +127,7 @@ app.post('/sso', async (req, res) => {
     </saml:Subject>
     <saml:Conditions NotBefore="${issueInstant}" NotOnOrAfter="${notOnOrAfter}">
         <saml:AudienceRestriction>
-            <saml:Audience>${AF_ENTITY_ID}</saml:Audience>
+            <saml:Audience>${audience}</saml:Audience>
         </saml:AudienceRestriction>
     </saml:Conditions>
     <saml:AuthnStatement AuthnInstant="${issueInstant}" SessionIndex="${assertionId}">
@@ -125,12 +137,13 @@ app.post('/sso', async (req, res) => {
     </saml:AuthnStatement>
 </saml:Assertion>`;
 
-    // Ký số Assertion
+    // Ký số trực tiếp bằng module crypto chuẩn (RSA-SHA256)
     const signer = crypto.createSign('RSA-SHA256');
     signer.update(assertionXml);
     signer.end();
     const signatureValue = signer.sign(privateKeyRaw, 'base64');
 
+    // Chèn trực tiếp chữ ký vào bên trong Assertion
     const signedAssertion = assertionXml.replace(
       `</saml:Assertion>`,
       `<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
@@ -155,29 +168,13 @@ app.post('/sso', async (req, res) => {
     </ds:Signature></saml:Assertion>`
     );
 
-    // Mã hóa Assertion đã ký bằng Encryption key của AppsFlyer
-    const encryptedAssertionXml = await new Promise((resolve, reject) => {
-      xmlEncryption.encrypt(signedAssertion, {
-        rsa_encryption: 'http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p',
-        aes_encryption: 'http://www.w3.org/2001/04/xmlenc#aes128-cbc',
-        rsa_pub: afEncryptionKey,
-        pem: afEncryptionKey,
-        key_info_include_cert: true
-      }, (err, encrypted) => {
-        if (err) reject(err);
-        else resolve(encrypted);
-      });
-    });
-
-    // Gói EncryptedAssertion vào Response chính
+    // Gói Response chính
     const samlResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
-    <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
+    <saml:Issuer>${idpEntityId}</saml:Issuer>
     <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
     </samlp:Status>
-    <saml:EncryptedAssertion>
-        ${encryptedAssertionXml}
-    </saml:EncryptedAssertion>
+    ${signedAssertion}
 </samlp:Response>`;
 
     const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
@@ -189,17 +186,17 @@ app.post('/sso', async (req, res) => {
             <input type="hidden" name="SAMLResponse" value="${samlResponseBase64}" />
             <input type="hidden" name="RelayState" value="${RelayState || ''}" />
           </form>
-          <p style="text-align:center; margin-top: 50px;">Đang gửi thông tin mã hóa bảo mật cho <b>${userEmail}</b> tới AppsFlyer...</p>
+          <p style="text-align:center; margin-top: 50px;">Đang gửi thông tin xác thực cho <b>${userEmail}</b> tới AppsFlyer...</p>
         </body>
       </html>
     `);
 
   } catch (error) {
-    console.error('[SAML Encryption & Signing Error]:', error);
+    console.error('[SAML Signing Error]:', error);
     res.status(500).send('Lỗi xử lý SAML Response: ' + error.message);
   }
 });
 
 app.listen(1060, () => {
-  console.log('>>> Server IdP Full Encryption & Signature chạy thành công trên port 1060');
+  console.log('>>> Server IdP (Fully Dynamic) chạy thành công trên port 1060');
 });
