@@ -24,12 +24,12 @@ try {
     callbackUrl: IDP_SSO_URL,
   });
 
-  // 1. Endpoint Metadata
-  app.get('/metadata', (req, res) => {
+// 1. Endpoint Metadata (có /sso-idp/metadata)
+  app.get('/sso-idp/metadata', (req, res) => {
     try {
       const certClean = certificate
         .replace(/-----(BEGIN|END) CERTIFICATE-----/g, '')
-        .replace(/[\r\n]+/g, ''); // Xóa toàn bộ ký tự xuống dòng
+        .replace(/[\r\n]+/g, '');
 
       res.type('application/xml');
       res.send(`<?xml version="1.0" encoding="UTF-8"?>
@@ -49,17 +49,17 @@ try {
     </md:IDPSSODescriptor>
 </md:EntityDescriptor>`);
     } catch (err) {
-      console.error('[Error] /metadata:', err);
+      console.error('[Error] /sso-idp/metadata:', err);
       res.status(500).send('Internal Error');
     }
   });
 
-  // 2. Giao diện Login
-  app.get('/sso', (req, res) => {
+  // 2. Giao diện Login (có /sso-idp/sso)
+  app.get('/sso-idp/sso', (req, res) => {
     const { SAMLRequest, RelayState } = req.query;
-    console.log('[Request] Nhận được GET /sso, SAMLRequest:', SAMLRequest ? 'Có' : 'Không có');
+    console.log('[Request] Nhận được GET /sso-idp/sso, SAMLRequest:', SAMLRequest ? 'Có' : 'Không có');
     res.send(`
-      <form method="POST" action="/sso" style="margin: 100px auto; width: 320px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px;">
+      <form method="POST" action="/sso-idp/sso" style="margin: 100px auto; width: 320px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px;">
         <h3 style="text-align: center;">AKA Digital SSO</h3>
         <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
         <input type="hidden" name="RelayState" value="${RelayState || ''}" />
@@ -75,8 +75,8 @@ try {
     `);
   });
 
-  // 3. Xử lý trả SAML Token
-  app.post('/sso', async (req, res) => {
+  // 3. Xử lý trả SAML Token (có /sso-idp/sso POST)
+  app.post('/sso-idp/sso', async (req, res) => {
     const { SAMLRequest, RelayState, username } = req.body;
     const userEmail = `${(username || 'admin').trim()}@akadigital.vn`;
     console.log(`[Process] Đang tạo SAML response cho user: ${userEmail}`);
@@ -119,7 +119,7 @@ try {
         `);
       });
     } catch (error) {
-      console.error('[Error catch POST /sso]:', error);
+      console.error('[Error catch POST /sso-idp/sso]:', error);
       res.status(500).send('Lỗi xử lý SAML Request: ' + error.message);
     }
   });
