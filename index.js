@@ -117,7 +117,7 @@ app.post('/sso', async (req, res) => {
     const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
     // Tạo Assertion XML chuẩn với Audience tự động bóc tách
-    const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
+const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
     <saml:Issuer>${idpEntityId}</saml:Issuer>
     <saml:Subject>
         <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${userEmail}</saml:NameID>
@@ -136,27 +136,36 @@ app.post('/sso', async (req, res) => {
         </saml:AuthnContext>
     </saml:AuthnStatement>
 </saml:Assertion>`;
+      
+      const unsignedResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
+    <saml:Issuer>${idpEntityId}</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+    </samlp:Status>
+    ${assertionXml}
+</samlp:Response>`;
 
     // Ký số trực tiếp bằng module crypto chuẩn (RSA-SHA256)
-    const signer = crypto.createSign('RSA-SHA256');
-    signer.update(assertionXml);
+const signer = crypto.createSign('RSA-SHA256');
+    signer.update(unsignedResponseXml);
     signer.end();
     const signatureValue = signer.sign(privateKeyRaw, 'base64');
 
-    // Chèn trực tiếp chữ ký vào bên trong Assertion
-    const signedAssertion = assertionXml.replace(
-      `</saml:Assertion>`,
-      `<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+    // Gói Response chính
+const samlResponseXml = unsignedResponseXml.replace(
+      `</saml:Issuer>`,
+      `</saml:Issuer>
+    <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
         <ds:SignedInfo>
             <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
             <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
-            <ds:Reference URI="#${assertionId}">
+            <ds:Reference URI="#${responseId}">
                 <ds:Transforms>
                     <ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
                     <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
                 </ds:Transforms>
                 <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
-                <ds:DigestValue>${crypto.createHash('sha256').update(assertionXml).digest('base64')}</ds:DigestValue>
+                <ds:DigestValue>${crypto.createHash('sha256').update(unsignedResponseXml).digest('base64')}</ds:DigestValue>
             </ds:Reference>
         </ds:SignedInfo>
         <ds:SignatureValue>${signatureValue}</ds:SignatureValue>
@@ -165,17 +174,8 @@ app.post('/sso', async (req, res) => {
                 <ds:X509Certificate>${certClean}</ds:X509Certificate>
             </ds:X509Data>
         </ds:KeyInfo>
-    </ds:Signature></saml:Assertion>`
+    </ds:Signature>`
     );
-
-    // Gói Response chính
-    const samlResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
-    <saml:Issuer>${idpEntityId}</saml:Issuer>
-    <samlp:Status>
-        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
-    </samlp:Status>
-    ${signedAssertion}
-</samlp:Response>`;
 
     const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
 
