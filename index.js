@@ -122,7 +122,7 @@ try {
       
       // Tham chiếu đến ID của Assertion để ký
       sig.addReference(
-        `//*[local-name(p)='Assertion']/@ID`,
+        `//*[@ID='${assertionId}']`,
         [
           'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
           'http://www.w3.org/2001/10/xml-exc-c14n#'
@@ -134,7 +134,15 @@ try {
         getKeyInfo: () => `<ds:X509Data><ds:X509Certificate>${certClean}</ds:X509Certificate></ds:X509Data>`
       };
 
-      sig.computeSignature(assertionXml);
+      sig.computeSignature(assertionXml, {
+        prefix: 'ds',
+        location: {
+          reference: "//*[local-name(p)='Assertion']/*[local-name(p)='Issuer']",
+          action: "after"
+        },
+        digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256'
+      });
+      
       const signedAssertion = sig.getSignatureXml();
 
       // Gộp Assertion đã ký vào Response chính
