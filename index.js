@@ -1,13 +1,54 @@
+
 'use strict';
-require('dotenv').config();
 
 const express = require('express');
-const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { SignedXml } = require('xml-crypto');
+
+// ========================================
+// 1. Load .env without requiring dotenv
+// ========================================
+
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+
+  const content = fs.readFileSync(filePath, 'utf8');
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+
+    if (!line || line.startsWith('#')) continue;
+
+    const separator = line.indexOf('=');
+    if (separator < 1) continue;
+
+    const key = line.slice(0, separator).trim();
+    let value = line.slice(separator + 1).trim();
+
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, '').trim();
+    }
+
+    // Keep variables supplied by the OS or process manager.
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadEnvFile(path.join(__dirname, '.env'));
+
+// ========================================
+// 2. App configuration
+// ========================================
 
 const app = express();
 
@@ -16,30 +57,37 @@ app.use(express.urlencoded({
   limit: '1mb'
 }));
 
-app.use(express.json());
+app.use(express.json({
+  limit: '1mb'
+}));
 
 const PORT = Number(process.env.PORT || 1060);
-const DEFAULT_EMAIL = process.env.DEFAULT_SSO_EMAIL || '';
+const DEFAULT_EMAIL = String(
+  process.env.DEFAULT_SSO_EMAIL || ''
+).trim();
 
-const IDP_PUBLIC_URL = (
+// Set this to the base URL, without /metadata or /sso.
+const IDP_PUBLIC_URL = String(
   process.env.IDP_PUBLIC_URL || ''
 ).replace(/\/+$/, '');
 
-const APPSFLYER_ACS_URL =
-  process.env.APPSFLYER_ACS_URL || '';
+const APPSFLYER_ACS_URL = String(
+  process.env.APPSFLYER_ACS_URL || ''
+).trim();
 
-const APPSFLYER_SP_ENTITY_ID =
-  process.env.APPSFLYER_SP_ENTITY_ID || '';
+const APPSFLYER_SP_ENTITY_ID = String(
+  process.env.APPSFLYER_SP_ENTITY_ID || ''
+).trim();
 
 const PRIVATE_KEY_PATH = path.join(__dirname, 'key.pem');
 const CERTIFICATE_PATH = path.join(__dirname, 'cert.pem');
 
 // ========================================
-// 1. Escape XML / HTML
+// 3. Escape XML and HTML
 // ========================================
 
 function xmlEscape(value) {
-  return String(value)
+  return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -57,7 +105,7 @@ function htmlEscape(value) {
 }
 
 // ========================================
-// 2. Public URL
+// 4. Public URL
 // ========================================
 
 function getPublicBaseUrl(req) {
@@ -65,12 +113,11 @@ function getPublicBaseUrl(req) {
     return IDP_PUBLIC_URL;
   }
 
-  // Khuyến nghị set IDP_PUBLIC_URL khi chạy sau reverse proxy.
   return `${req.protocol}://${req.get('host')}`;
 }
 
 // ========================================
-// 3. Read certificate
+// 5. Certificate
 // ========================================
 
 function readCertificate() {
@@ -95,7 +142,7 @@ function readCertificate() {
 }
 
 // ========================================
-// 4. Parse SAMLRequest
+// 6. Decode SAMLRequest
 // ========================================
 
 function decodeSamlRequest(encodedRequest) {
@@ -103,24 +150,21 @@ function decodeSamlRequest(encodedRequest) {
     !encodedRequest ||
     typeof encodedRequest !== 'string'
   ) {
-    throw new Error(
-      'Missing SAMLRequest. SP-initiated SSO requires an AuthnRequest.'
-    );
+    throw new Error('Missing SAMLRequest.');
   }
 
-  // Query parameters có thể biến dấu + thành dấu cách.
   const normalized = encodedRequest.replace(/ /g, '+');
   const buffer = Buffer.from(normalized, 'base64');
 
   let requestXml;
 
   try {
-    // HTTP-Redirect binding: raw DEFLATE + Base64
+    // HTTP-Redirect binding: Base64 + raw DEFLATE.
     requestXml = zlib
       .inflateRawSync(buffer)
       .toString('utf8');
   } catch {
-    // HTTP-POST binding: Base64-encoded XML
+    // HTTP-POST binding: Base64-encoded XML.
     requestXml = buffer.toString('utf8');
   }
 
@@ -171,7 +215,7 @@ function decodeSamlRequest(encodedRequest) {
 }
 
 // ========================================
-// 5. Validate URLs
+// 7. Validate URLs
 // ========================================
 
 function validateHttpsUrl(value, label) {
@@ -180,10 +224,7 @@ function validateHttpsUrl(value, label) {
   try {
     parsed = new URL(value);
   } catch {
-    throw new Error(
-      `${label} is missing or invalid. ` +
-      'Configure it from AppsFlyer SP metadata.'
-    );
+    throw new Error(`${label} is missing or invalid.`);
   }
 
   if (parsed.protocol !== 'https:') {
@@ -194,7 +235,101 @@ function validateHttpsUrl(value, label) {
 }
 
 // ========================================
-// 6. IdP Metadata
+// 8. Loading page: automatically POST
+// ========================================
+
+function renderAutoSubmitPage({
+  action,
+  fields,
+  title,
+  message
+}) {
+  const hiddenFields = Object.entries(fields)
+    .map(([name, value]) => {
+      return `<input type="hidden" name="${htmlEscape(name)}" value="${htmlEscape(value)}">`;
+    })
+    .join('\n');
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${htmlEscape(title)}</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: Arial, sans-serif;
+      color: #252525;
+      background: #fff;
+    }
+
+    .loading {
+      padding: 24px;
+      text-align: center;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 18px;
+      border: 4px solid #e8e8e8;
+      border-top-color: #2563eb;
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+
+    .title {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .hint {
+      margin-top: 8px;
+      color: #666;
+      font-size: 13px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="loading" role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <div class="title">${htmlEscape(title)}</div>
+    <div class="hint">${htmlEscape(message)}</div>
+  </main>
+
+  <form id="ssoForm" method="POST" action="${htmlEscape(action)}">
+    ${hiddenFields}
+    <noscript>
+      <button type="submit">Continue</button>
+    </noscript>
+  </form>
+
+  <script>
+    window.addEventListener('load', function () {
+      document.getElementById('ssoForm').submit();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+// ========================================
+// 9. IdP Metadata
 // ========================================
 
 app.get('/metadata', (req, res) => {
@@ -208,12 +343,12 @@ app.get('/metadata', (req, res) => {
 
     const metadata = `<?xml version="1.0" encoding="UTF-8"?>
 <md:EntityDescriptor
-    xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
-    xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
-    entityID="${xmlEscape(idpEntityId)}">
+  xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
+  xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+  entityID="${xmlEscape(idpEntityId)}">
 
   <md:IDPSSODescriptor
-      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
 
     <md:KeyDescriptor use="signing">
       <ds:KeyInfo>
@@ -228,23 +363,19 @@ app.get('/metadata', (req, res) => {
     </md:NameIDFormat>
 
     <md:SingleSignOnService
-        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
-        Location="${xmlEscape(idpSsoUrl)}"/>
+      Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+      Location="${xmlEscape(idpSsoUrl)}"/>
 
     <md:SingleSignOnService
-        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
-        Location="${xmlEscape(idpSsoUrl)}"/>
+      Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+      Location="${xmlEscape(idpSsoUrl)}"/>
 
   </md:IDPSSODescriptor>
 </md:EntityDescriptor>`;
 
     res.type('application/xml').send(metadata);
-
   } catch (error) {
-    console.error(
-      '[Metadata Error]',
-      error.message
-    );
+    console.error('[Metadata Error]', error.message);
 
     res.status(500).send(
       'Unable to generate IdP metadata. Check cert.pem.'
@@ -253,7 +384,7 @@ app.get('/metadata', (req, res) => {
 });
 
 // ========================================
-// 7. Health check
+// 10. Health check
 // ========================================
 
 app.get('/health', (_req, res) => {
@@ -261,22 +392,11 @@ app.get('/health', (_req, res) => {
 });
 
 // ========================================
-// 8. Login form
+// 11. SSO entry point
 // ========================================
 
-// DEMO ONLY:
-// Form này chỉ nhận email, không xác thực danh tính.
-// Không sử dụng làm IdP production nếu chưa tích hợp
-// authentication thật của công ty.
-
+// HTTP-Redirect binding: SAMLRequest is in the query string.
 app.get('/sso', (req, res) => {
-console.log('[SSO GET DEBUG]', {
-  originalUrl: req.originalUrl,
-  queryKeys: Object.keys(req.query),
-  referer: req.get('referer') || '(none)',
-  method: req.method
-});
-    
   const SAMLRequest =
     typeof req.query.SAMLRequest === 'string'
       ? req.query.SAMLRequest
@@ -285,136 +405,88 @@ console.log('[SSO GET DEBUG]', {
   const RelayState =
     typeof req.query.RelayState === 'string'
       ? req.query.RelayState
-            : '';
-    
-    if (!SAMLRequest) {
-  console.error(
-    '[SSO GET] Missing SAMLRequest. Check SAML binding and IdP SSO URL.'
+      : '';
+
+  if (!SAMLRequest) {
+    return res.status(400).send(
+      'Missing SAMLRequest. Please start SSO from AppsFlyer.'
+    );
+  }
+
+  if (!DEFAULT_EMAIL) {
+    return res.status(500).send(
+      'Missing DEFAULT_SSO_EMAIL configuration.'
+    );
+  }
+
+  // UAT flow: no IdP email form; show loading and auto-submit.
+  return res.type('html').send(
+    renderAutoSubmitPage({
+      action: '/sso',
+      fields: {
+        SAMLRequest,
+        RelayState,
+        email: DEFAULT_EMAIL
+      },
+      title: 'Signing in to AppsFlyer...',
+      message: 'Please wait while we process your sign-in.'
+    })
   );
-
-  return res.status(400).send(
-    'Missing SAMLRequest. Please start SSO from AppsFlyer.'
-  );
-}
-
-  res.type('html').send(`<!doctype html>
-<html lang="vi">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AKA Digital SSO</title>
-</head>
-<body>
-  <form method="POST"
-        action="/sso"
-        style="margin:100px auto;width:360px;max-width:90%;
-               font-family:sans-serif;padding:20px;
-               border:1px solid #ccc;border-radius:8px">
-
-    <h3 style="text-align:center">AKA Digital SSO</h3>
-
-    <input type="hidden"
-           name="SAMLRequest"
-           value="${htmlEscape(SAMLRequest)}">
-
-    <input type="hidden"
-           name="RelayState"
-           value="${htmlEscape(RelayState)}">
-
-    <div style="margin-bottom:15px">
-      <label for="email">Tài khoản đăng nhập:</label><br>
-
-      <input id="email"
-             type="email"
-             name="email"
-             value="${htmlEscape(DEFAULT_EMAIL)}"
-             style="width:100%;padding:8px;margin-top:5px;
-                    box-sizing:border-box"
-             required>
-    </div>
-
-    <button type="submit"
-            style="width:100%;padding:10px;background:#000;
-                   color:#fff;border:0;border-radius:4px;
-                   cursor:pointer;font-weight:bold">
-      Xác thực &amp; Vào AppsFlyer
-    </button>
-
-  </form>
-</body>
-</html>`);
 });
 
 // ========================================
-// 9. Handle SAML login
+// 12. Handle SAML login
 // ========================================
 
 app.post('/sso', async (req, res) => {
-  console.log('[POST /sso DEBUG]', {
-    contentType: req.headers['content-type'],
-    bodyKeys: Object.keys(req.body || {}),
-    hasSAMLRequest: typeof req.body?.SAMLRequest === 'string',
-    hasRelayState: typeof req.body?.RelayState === 'string',
-    hasEmail: Boolean(req.body?.email)
+  const { SAMLRequest, RelayState } = req.body || {};
+
+  const userEmail = String(
+    req.body?.email || ''
+  ).trim();
+
+  console.info('[POST /sso]', {
+    hasSAMLRequest: typeof SAMLRequest === 'string' && Boolean(SAMLRequest),
+    hasRelayState: typeof RelayState === 'string' && Boolean(RelayState),
+    hasEmail: Boolean(userEmail)
   });
 
   try {
-    const { SAMLRequest, RelayState } = req.body || {};
-
-    const userEmail = String(
-      req.body?.email || ''
-    ).trim();
-
-    // Bước 1: AppsFlyer gửi AuthnRequest bằng HTTP-POST.
-    // Hiển thị form đăng nhập của IdP, không yêu cầu email
-    // trong request SAML ban đầu.
-    if (SAMLRequest && !userEmail) {
-      const samlRequestValue = htmlEscape(SAMLRequest);
-      const relayStateValue = htmlEscape(RelayState || '');
-      const defaultEmail = htmlEscape(DEFAULT_EMAIL);
-
-      return res.type('html').send(`<!doctype html>
-<html lang="vi">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AKA Digital SSO</title>
-</head>
-<body>
-  <form method="POST" action="/sso"
-        style="margin:100px auto;width:360px;max-width:90%;
-        font-family:sans-serif;padding:20px;
-        border:1px solid #ccc;border-radius:8px">
-
-    <h3>AKA Digital SSO</h3>
-
-    <input type="hidden" name="SAMLRequest"
-           value="${samlRequestValue}">
-
-    <input type="hidden" name="RelayState"
-           value="${relayStateValue}">
-
-    <label for="email">Email đăng nhập:</label>
-    <input id="email" type="email" name="email"
-           value="${defaultEmail}"
-           style="width:100%;padding:8px;margin-top:5px;
-           margin-bottom:15px;box-sizing:border-box"
-           required>
-
-    <button type="submit">Tiếp tục</button>
-  </form>
-</body>
-</html>`);
-    }
-
-    // Bước 2: Người dùng submit form IdP.
-    if (!userEmail) {
+    if (
+      !SAMLRequest ||
+      typeof SAMLRequest !== 'string'
+    ) {
       return res.status(400).send(
-        'Please enter your email address.'
+        'Missing SAMLRequest. Please start SSO from AppsFlyer.'
       );
     }
 
-    // Parse AuthnRequest from AppsFlyer.
+    // Fallback if POST was started directly without email.
+    if (!userEmail) {
+      if (!DEFAULT_EMAIL) {
+        return res.status(500).send(
+          'Missing DEFAULT_SSO_EMAIL configuration.'
+        );
+      }
+
+      return res.type('html').send(
+        renderAutoSubmitPage({
+          action: '/sso',
+          fields: {
+            SAMLRequest,
+            RelayState: typeof RelayState === 'string' ? RelayState : '',
+            email: DEFAULT_EMAIL
+          },
+          title: 'Signing in to AppsFlyer...',
+          message: 'Please wait while we process your sign-in.'
+        })
+      );
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
+      return res.status(400).send('Invalid email address.');
+    }
+
     const parsed = decodeSamlRequest(SAMLRequest);
 
     console.info('[SAML] AuthnRequest parsed', {
@@ -423,8 +495,6 @@ app.post('/sso', async (req, res) => {
       issuer: parsed.issuer
     });
 
-    // Ưu tiên giá trị trong AuthnRequest.
-    // Nếu không có ACS URL thì dùng cấu hình đã xác minh.
     const acsCandidate =
       parsed.requestedAcsUrl ||
       APPSFLYER_ACS_URL;
@@ -440,14 +510,11 @@ app.post('/sso', async (req, res) => {
 
     if (!audienceCandidate) {
       throw new Error(
-        'AppsFlyer SP Entity ID is missing. ' +
-        'Set APPSFLYER_SP_ENTITY_ID from verified SP metadata.'
+        'AppsFlyer SP Entity ID is missing. Set APPSFLYER_SP_ENTITY_ID.'
       );
     }
 
-    const audience = String(
-      audienceCandidate
-    ).trim();
+    const audience = String(audienceCandidate).trim();
 
     const baseUrl = getPublicBaseUrl(req);
     const idpEntityId = `${baseUrl}/metadata`;
@@ -457,26 +524,20 @@ app.post('/sso', async (req, res) => {
       'utf8'
     );
 
-    const { certificate, certClean } =
-      readCertificate();
+    const { certificate } = readCertificate();
 
-    // Kiểm tra private key có parse được.
+    // Verify private key is readable.
     crypto.createPrivateKey({
       key: privateKeyRaw,
       format: 'pem'
     });
 
-    // ========================================
-    // 10. Build SAML Response
-    // ========================================
-
     const now = Date.now();
 
-    const issueInstant =
-      new Date(now).toISOString();
-
-    const notOnOrAfter =
-      new Date(now + 5 * 60 * 1000).toISOString();
+    const issueInstant = new Date(now).toISOString();
+    const notOnOrAfter = new Date(
+      now + 5 * 60 * 1000
+    ).toISOString();
 
     const responseId =
       `_${crypto.randomBytes(16).toString('hex')}`;
@@ -489,63 +550,66 @@ app.post('/sso', async (req, res) => {
     const acsXml = xmlEscape(acsUrl);
     const audienceXml = xmlEscape(audience);
     const requestIdXml = xmlEscape(parsed.requestId);
+    const responseIdXml = xmlEscape(responseId);
+    const assertionIdXml = xmlEscape(assertionId);
 
-    const responseIdXml =
-      xmlEscape(responseId);
+    // Fail fast instead of generating empty Issuer elements.
+    if (!idpEntityId || !acsUrl || !audience) {
+      throw new Error(
+        'Missing IdP Entity ID, ACS URL, or SP Audience.'
+      );
+    }
 
-    const assertionIdXml =
-          xmlEscape(assertionId);
-      
-      console.log('[SSO CONFIG]', {
-  IDP_PUBLIC_URL: process.env.IDP_PUBLIC_URL,
-  APPSFLYER_ACS_URL: process.env.APPSFLYER_ACS_URL,
-  APPSFLYER_SP_ENTITY_ID: process.env.APPSFLYER_SP_ENTITY_ID
-});
+    console.info('[SSO CONFIG]', {
+      idpEntityId,
+      acsUrl,
+      audience
+    });
 
     const xmlUnsigned = `<?xml version="1.0" encoding="UTF-8"?>
 <samlp:Response
-    xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
-    xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-    ID="${responseIdXml}"
-    Version="2.0"
-    IssueInstant="${issueInstant}"
-    Destination="${acsXml}"
-    InResponseTo="${requestIdXml}">
+  xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+  xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+  ID="${responseIdXml}"
+  Version="2.0"
+  IssueInstant="${issueInstant}"
+  Destination="${acsXml}"
+  InResponseTo="${requestIdXml}">
 
-  <saml:Issuer>${IDP_PUBLIC_URL}</saml:Issuer>
+  <saml:Issuer>${idpEntityXml}</saml:Issuer>
 
   <samlp:Status>
     <samlp:StatusCode
-        Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+      Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
   </samlp:Status>
 
   <saml:Assertion
-      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-      xmlns:xs="http://www.w3.org/2001/XMLSchema"
-      ID="${assertionIdXml}"
-      Version="2.0"
-      IssueInstant="${issueInstant}">
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    ID="${assertionIdXml}"
+    Version="2.0"
+    IssueInstant="${issueInstant}">
 
-    <saml:Issuer>${IDP_PUBLIC_URL}</saml:Issuer>
+    <saml:Issuer>${idpEntityXml}</saml:Issuer>
 
     <saml:Subject>
       <saml:NameID
-          Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${emailXml}</saml:NameID>
+        Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${emailXml}</saml:NameID>
 
       <saml:SubjectConfirmation
-          Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+        Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
 
         <saml:SubjectConfirmationData
-            InResponseTo="${requestIdXml}"
-            NotOnOrAfter="${notOnOrAfter}"
-            Recipient="${acsXml}"/>
+          InResponseTo="${requestIdXml}"
+          NotOnOrAfter="${notOnOrAfter}"
+          Recipient="${acsXml}"/>
 
       </saml:SubjectConfirmation>
     </saml:Subject>
 
     <saml:Conditions
-        NotBefore="${issueInstant}"
-        NotOnOrAfter="${notOnOrAfter}">
+      NotBefore="${issueInstant}"
+      NotOnOrAfter="${notOnOrAfter}">
 
       <saml:AudienceRestriction>
         <saml:Audience>${audienceXml}</saml:Audience>
@@ -554,8 +618,8 @@ app.post('/sso', async (req, res) => {
     </saml:Conditions>
 
     <saml:AuthnStatement
-        AuthnInstant="${issueInstant}"
-        SessionIndex="${assertionIdXml}">
+      AuthnInstant="${issueInstant}"
+      SessionIndex="${assertionIdXml}">
 
       <saml:AuthnContext>
         <saml:AuthnContextClassRef>
@@ -567,8 +631,8 @@ app.post('/sso', async (req, res) => {
 
     <saml:AttributeStatement>
       <saml:Attribute
-          Name="email"
-          NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:basic">
+        Name="email"
+        NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:basic">
 
         <saml:AttributeValue xsi:type="xs:string">${emailXml}</saml:AttributeValue>
 
@@ -579,11 +643,8 @@ app.post('/sso', async (req, res) => {
 </samlp:Response>`;
 
     // ========================================
-    // 11. Sign SAML Response
+    // 13. Sign SAML Response
     // ========================================
-
-    // API này dành cho các phiên bản xml-crypto mới.
-    // Kiểm tra version bằng: npm ls xml-crypto
 
     const sig = new SignedXml({
       privateKey: privateKeyRaw,
@@ -596,11 +657,9 @@ app.post('/sso', async (req, res) => {
         'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'
     });
 
-    // QUAN TRỌNG:
-    // responseId giữ nguyên dấu "_" khi tham chiếu XML ID.
     sig.addReference({
       xpath: "/*[local-name(.)='Response']",
-      uri: responseId,
+      uri: `#${responseId}`,
 
       transforms: [
         'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
@@ -619,16 +678,12 @@ app.post('/sso', async (req, res) => {
       }
     });
 
-    const samlResponseXml =
-      sig.getSignedXml();
+    const samlResponseXml = sig.getSignedXml();
 
-    const samlResponseBase64 =
-      Buffer.from(
-        samlResponseXml,
-        'utf8'
-      ).toString('base64');
+    const samlResponseBase64 = Buffer
+      .from(samlResponseXml, 'utf8')
+      .toString('base64');
 
-    // Không log toàn bộ SAMLResponse hoặc private key.
     console.info('[SAML] Response generated', {
       responseId,
       inResponseTo: parsed.requestId,
@@ -639,37 +694,22 @@ app.post('/sso', async (req, res) => {
     });
 
     // ========================================
-    // 12. POST Response to AppsFlyer ACS
+    // 14. Auto-POST SAMLResponse to AppsFlyer
     // ========================================
 
-    res.type('html').send(`<!doctype html>
-<html lang="vi">
-<head>
-  <meta charset="utf-8">
-  <title>Redirecting to AppsFlyer</title>
-</head>
-
-<body onload="document.forms[0].submit()">
-
-  <form method="POST"
-        action="${htmlEscape(acsUrl)}">
-
-    <input type="hidden"
-           name="SAMLResponse"
-           value="${htmlEscape(samlResponseBase64)}">
-
-    <input type="hidden"
-           name="RelayState"
-           value="${htmlEscape(RelayState || '')}">
-
-  </form>
-
-  <p style="text-align:center;margin-top:50px">
-    Đang gửi thông tin xác thực tới AppsFlyer...
-  </p>
-
-</body>
-</html>`);
+    return res.type('html').send(
+      renderAutoSubmitPage({
+        action: acsUrl,
+        fields: {
+          SAMLResponse: samlResponseBase64,
+          RelayState: typeof RelayState === 'string'
+            ? RelayState
+            : ''
+        },
+        title: 'Redirecting to AppsFlyer...',
+        message: 'Please wait while we finish signing you in.'
+      })
+    );
 
   } catch (error) {
     console.error('[SAML] Processing failed', {
@@ -678,24 +718,27 @@ app.post('/sso', async (req, res) => {
       stack: error.stack
     });
 
-    res.status(500).send(
-      'Lỗi xử lý SAML. Kiểm tra server log để biết chi tiết. ' +
-      htmlEscape(error.message)
+    return res.status(500).type('text').send(
+      `SAML processing failed: ${error.message}`
     );
   }
 });
 
 // ========================================
-// 13. Start server
+// 15. Start server
 // ========================================
 
 app.listen(PORT, () => {
+  console.log(`[Init] SAML IdP listening on port ${PORT}`);
   console.log(
-    `[Init] SAML IdP demo listening on port ${PORT}`
+    '[Init] IDP_PUBLIC_URL:',
+    IDP_PUBLIC_URL || '(request host fallback)'
   );
-
   console.log(
-    '[Init] Verify IDP_PUBLIC_URL, APPSFLYER_ACS_URL, ' +
-    'and APPSFLYER_SP_ENTITY_ID against actual metadata.'
+    '[Init] DEFAULT_SSO_EMAIL configured:',
+    Boolean(DEFAULT_EMAIL)
+  );
+  console.log(
+    '[Init] Confirm the IdP Entity ID, ACS URL, SP Entity ID and certificate against AppsFlyer configuration.'
   );
 });
