@@ -27,19 +27,25 @@ try {
   // 1. Endpoint Metadata
   app.get('/metadata', (req, res) => {
     try {
-      const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/\s/g, '');
+      const certClean = certificate
+        .replace(/-----(BEGIN|END) CERTIFICATE-----/g, '')
+        .replace(/[\r\n]+/g, ''); // Xóa toàn bộ ký tự xuống dòng
+
       res.type('application/xml');
       res.send(`<?xml version="1.0" encoding="UTF-8"?>
-<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${IDP_ENTITY_ID}">
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" 
+                     xmlns:ds="http://www.w3.org/2000/09/xmldsig#" 
+                     entityID="${IDP_ENTITY_ID}">
     <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
         <md:KeyDescriptor use="signing">
-            <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+            <ds:KeyInfo>
                 <ds:X509Data>
                     <ds:X509Certificate>${certClean}</ds:X509Certificate>
                 </ds:X509Data>
             </ds:KeyInfo>
         </md:KeyDescriptor>
         <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="${IDP_SSO_URL}"/>
+        <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${IDP_SSO_URL}"/>
     </md:IDPSSODescriptor>
 </md:EntityDescriptor>`);
     } catch (err) {
