@@ -82,6 +82,27 @@ const APPSFLYER_SP_ENTITY_ID = String(
 const PRIVATE_KEY_PATH = path.join(__dirname, 'key.pem');
 const CERTIFICATE_PATH = path.join(__dirname, 'cert.pem');
 
+const allowedIps = new Set(
+  (process.env.SSO_ALLOWED_IPS || "")
+    .split(",")
+    .map(ip => ip.trim())
+    .filter(Boolean)
+);
+
+function ssoIpAllowlist(req, res, next) {
+  const clientIp = getClientIp(req);
+
+  if (!allowedIps.has(clientIp)) {
+    console.warn(`[SSO DENIED] IP=${clientIp}`);
+    return res.status(403).send("Access denied: IP not allowed");
+  }
+
+  next();
+}
+
+// Áp dụng cho cả GET và POST /sso
+app.use("/sso", ssoIpAllowlist);
+
 // ========================================
 // 3. Escape XML and HTML
 // ========================================
