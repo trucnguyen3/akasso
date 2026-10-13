@@ -120,14 +120,18 @@ try {
       sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
       sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
       
-      // Tham chiếu đến ID của Assertion để ký
+      // Khai báo rõ ràng digestAlgorithm ngay trong addReference (tham số thứ 3 và cấu hình)
       sig.addReference(
         `//*[@ID='${assertionId}']`,
         [
           'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
           'http://www.w3.org/2001/10/xml-exc-c14n#'
         ],
-        'http://www.w3.org/2001/04/xmlenc#sha256'
+        'http://www.w3.org/2001/04/xmlenc#sha256',
+        '',
+        '',
+        '',
+        true
       );
 
       sig.keyInfoProvider = {
@@ -139,8 +143,7 @@ try {
         location: {
           reference: "//*[local-name(p)='Assertion']/*[local-name(p)='Issuer']",
           action: "after"
-        },
-        digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256'
+        }
       });
       
       const signedAssertion = sig.getSignatureXml();
