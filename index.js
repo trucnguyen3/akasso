@@ -4,7 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
-const { SignedXml } = require('xml-crypto');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -15,7 +14,7 @@ const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
 const AF_ENTITY_ID = 'https://hq1.appsflyer.com';
 const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso-callback/acc-fbb1a88f';
 
-console.log('[Init] Khởi động ứng dụng SAML IdP cho AppsFlyer...');
+console.log('[Init] Khởi động ứng dụng SAML IdP chuẩn Crypto Native cho AppsFlyer...');
 
 // 1. Endpoint Metadata cho AppsFlyer đọc
 app.get('/metadata', (req, res) => {
@@ -69,16 +68,11 @@ app.post('/sso', async (req, res) => {
   const userEmail = (email || 'truc.nguyen@akadigital.vn').trim();
 
   try {
-    // Đọc trực tiếp key và cert ngay trong request để đảm bảo không bị mất biến
     const privateKeyPath = path.join(__dirname, 'key.pem');
     const certificatePath = path.join(__dirname, 'cert.pem');
     
     const privateKeyRaw = fs.readFileSync(privateKeyPath, 'utf8');
     const certificate = fs.readFileSync(certificatePath, 'utf8');
-
-    if (!privateKeyRaw) {
-      throw new Error('File key.pem trống hoặc không đọc được!');
-    }
 
     let acsUrl = AF_ACS_URL;
     let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
@@ -106,7 +100,7 @@ app.post('/sso', async (req, res) => {
     const notOnOrAfter = new Date(Date.now() + 600000).toISOString();
     const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
-    // Tạo Assertion XML cần ký số
+    // Tạo phần Assertion
     const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
     <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
     <saml:Subject>
@@ -127,38 +121,35 @@ app.post('/sso', async (req, res) => {
     </saml:AuthnStatement>
 </saml:Assertion>`;
 
-      // Ký số chuẩn bằng xml-crypto với crypto.createPrivateKey
-      
-      const privateKeyObj = crypto.createPrivateKey({
-      key: privateKeyRaw,
-      format: 'pem',
-      type: 'pkcs8' // Hoặc 'sec1' nếu dùng ec, với rsa mặc định pkcs8 / pkcs1 đều hỗ trợ
-      });
-      
-    const sig = new SignedXml();
-    sig.signingKey = privateKeyObj;
-    sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
-    sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
-    
-    sig.addReference({
-      xpath: `//*[@ID='${assertionId}']`,
-      transforms: [
-        'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
-        'http://www.w3.org/2001/10/xml-exc-c14n#'
-      ],
-      digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256'
-    });
+    // Ký số trực tiếp bằng module crypto chuẩn của Node.js (RSA-SHA256)
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(assertionXml);
+    signer.end();
+    const signatureValue = signer.sign(privateKeyRaw, 'base64');
 
-    sig.keyInfoProvider = {
-      getKeyInfo: () => `<ds:X509Data><ds:X509Certificate>${certClean}</ds:X509Certificate></ds:X509Data>`
-    };
-
-    sig.computeSignature(assertionXml);
-    
-    const signedAssertion = sig.getSignatureXml();
-    const finalAssertion = assertionXml.replace(
-      `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>`, 
-      `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>${signedAssertion}`
+    // Tạo thẻ chữ ký XML chuẩn tương thích
+    const signedAssertion = assertionXml.replace(
+      `</saml:Assertion>`,
+      `<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:SignedInfo>
+            <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+            <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+            <ds:Reference URI="#${assertionId}">
+                <ds:Transforms>
+                    <ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+                    <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+                </ds:Transforms>
+                <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+                <ds:DigestValue>${crypto.createHash('sha256').update(assertionXml).digest('base64')}</ds:DigestValue>
+            </ds:Reference>
+        </ds:SignedInfo>
+        <ds:SignatureValue>${signatureValue}</ds:SignatureValue>
+        <ds:KeyInfo>
+            <ds:X509Data>
+                <ds:X509Certificate>${certClean}</ds:X509Certificate>
+            </ds:X509Data>
+        </ds:KeyInfo>
+    </ds:Signature></saml:Assertion>`
     );
 
     // Gói vào Response chính
@@ -167,7 +158,7 @@ app.post('/sso', async (req, res) => {
     <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
     </samlp:Status>
-    ${finalAssertion}
+    ${signedAssertion}
 </samlp:Response>`;
 
     const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
@@ -185,11 +176,11 @@ app.post('/sso', async (req, res) => {
     `);
 
   } catch (error) {
-    console.error('[SAML Signing Error Detail]:', error);
+    console.error('[SAML Native Signing Error]:', error);
     res.status(500).send('Lỗi ký số SAML: ' + error.message);
   }
 });
 
 app.listen(1060, () => {
-  console.log('>>> Server IdP chạy thành công trên port 1060');
+  console.log('>>> Server IdP (Native Crypto) chạy thành công trên port 1060');
 });
