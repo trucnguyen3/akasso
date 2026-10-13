@@ -67,7 +67,8 @@ try {
     const userEmail = `${(username || 'admin').trim()}@akadigital.vn`;
 
     try {
-      let acsUrl = 'https://saml.appsflyer.com/sso/saml';
+      let acsUrl = 'https://hq1.appsflyer.com/auth/sso-metadata?acc-id=acc-fbb1a88f';
+      const APPSFLYER_ENTITY_ID = 'https://hq1.appsflyer.com';
       let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
 
       // Giải mã SAMLRequest từ AppsFlyer gửi sang qua phương thức Deflate / Base64
@@ -112,7 +113,7 @@ try {
         </saml:Subject>
         <saml:Conditions NotBefore="${issueInstant}" NotOnOrAfter="${notOnOrAfter}">
             <saml:AudienceRestriction>
-                <saml:Audience>${IDP_ENTITY_ID}</saml:Audience>
+                <saml:Audience>${APPSFLYER_ENTITY_ID}</saml:Audience>
             </saml:AudienceRestriction>
         </saml:Conditions>
         <saml:AuthnStatement AuthnInstant="${issueInstant}" SessionIndex="${assertionId}">
