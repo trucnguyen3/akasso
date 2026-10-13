@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const xmlEncryption = require('xml-encryption');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -12,11 +13,11 @@ const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
 const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
 
 const AF_ENTITY_ID = 'https://hq1.appsflyer.com';
-const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso-callback/acc-fbb1a88f';
+const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso/saml/callback';
 
-console.log('[Init] Khởi động ứng dụng SAML IdP chuẩn Crypto Native cho AppsFlyer...');
+console.log('[Init] Khởi động Server IdP (Hỗ trợ Ký số & Mã hóa AppsFlyer)...');
 
-// 1. Endpoint Metadata cho AppsFlyer đọc
+// 1. Endpoint Metadata
 app.get('/metadata', (req, res) => {
   try {
     const certPath = path.join(__dirname, 'cert.pem');
@@ -41,7 +42,7 @@ app.get('/metadata', (req, res) => {
     </md:IDPSSODescriptor>
 </md:EntityDescriptor>`);
   } catch (err) {
-    res.status(500).send('Lỗi đọc certificate metadata: ' + err.message);
+    res.status(500).send('Lỗi đọc metadata: ' + err.message);
   }
 });
 
@@ -62,7 +63,7 @@ app.get('/sso', (req, res) => {
   `);
 });
 
-// 3. Xử lý tạo SAML Response, ký số và gửi về AppsFlyer
+// 3. Xử lý tạo SAML Response, Ký số, Mã hóa và gửi về AppsFlyer
 app.post('/sso', async (req, res) => {
   const { SAMLRequest, RelayState, email } = req.body;
   const userEmail = (email || 'truc.nguyen@akadigital.vn').trim();
@@ -70,9 +71,11 @@ app.post('/sso', async (req, res) => {
   try {
     const privateKeyPath = path.join(__dirname, 'key.pem');
     const certificatePath = path.join(__dirname, 'cert.pem');
+    const afEncryptionKeyPath = path.join(__dirname, 'ca.pem');
     
     const privateKeyRaw = fs.readFileSync(privateKeyPath, 'utf8');
     const certificate = fs.readFileSync(certificatePath, 'utf8');
+    const afEncryptionKey = fs.readFileSync(afEncryptionKeyPath, 'utf8');
 
     let acsUrl = AF_ACS_URL;
     let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
@@ -94,13 +97,14 @@ app.post('/sso', async (req, res) => {
       }
     }
 
-    const issueInstant = new Date().toISOString();
+    const now = Date.now() - 180000; // Bù trừ clock skew 3 phút
+    const issueInstant = new Date(now).toISOString();
     const responseId = '_' + crypto.randomBytes(16).toString('hex');
     const assertionId = '_' + crypto.randomBytes(16).toString('hex');
-    const notOnOrAfter = new Date(Date.now() + 600000).toISOString();
+    const notOnOrAfter = new Date(now + 600000).toISOString();
     const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
-    // Tạo phần Assertion
+    // Tạo Assertion XML chuẩn
     const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
     <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
     <saml:Subject>
@@ -121,13 +125,12 @@ app.post('/sso', async (req, res) => {
     </saml:AuthnStatement>
 </saml:Assertion>`;
 
-    // Ký số trực tiếp bằng module crypto chuẩn của Node.js (RSA-SHA256)
+    // Ký số Assertion
     const signer = crypto.createSign('RSA-SHA256');
     signer.update(assertionXml);
     signer.end();
     const signatureValue = signer.sign(privateKeyRaw, 'base64');
 
-    // Tạo thẻ chữ ký XML chuẩn tương thích
     const signedAssertion = assertionXml.replace(
       `</saml:Assertion>`,
       `<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
@@ -152,13 +155,28 @@ app.post('/sso', async (req, res) => {
     </ds:Signature></saml:Assertion>`
     );
 
-    // Gói vào Response chính
+    // Mã hóa Assertion đã ký bằng Encryption key của AppsFlyer
+    const encryptedAssertionXml = await new Promise((resolve, reject) => {
+      xmlEncryption.encrypt(signedAssertion, {
+        rsa_encryption: 'http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p',
+        aes_encryption: 'http://www.w3.org/2001/04/xmlenc#aes128-cbc',
+        public_key: afEncryptionKey,
+        key_info_include_cert: true
+      }, (err, encrypted) => {
+        if (err) reject(err);
+        else resolve(encrypted);
+      });
+    });
+
+    // Gói EncryptedAssertion vào Response chính
     const samlResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
     <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
     <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
     </samlp:Status>
-    ${signedAssertion}
+    <saml:EncryptedAssertion>
+        ${encryptedAssertionXml}
+    </saml:EncryptedAssertion>
 </samlp:Response>`;
 
     const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
@@ -170,17 +188,17 @@ app.post('/sso', async (req, res) => {
             <input type="hidden" name="SAMLResponse" value="${samlResponseBase64}" />
             <input type="hidden" name="RelayState" value="${RelayState || ''}" />
           </form>
-          <p style="text-align:center; margin-top: 50px;">Đang gửi thông tin xác thực cho <b>${userEmail}</b> tới AppsFlyer...</p>
+          <p style="text-align:center; margin-top: 50px;">Đang gửi thông tin mã hóa bảo mật cho <b>${userEmail}</b> tới AppsFlyer...</p>
         </body>
       </html>
     `);
 
   } catch (error) {
-    console.error('[SAML Native Signing Error]:', error);
-    res.status(500).send('Lỗi ký số SAML: ' + error.message);
+    console.error('[SAML Encryption & Signing Error]:', error);
+    res.status(500).send('Lỗi xử lý SAML Response: ' + error.message);
   }
 });
 
 app.listen(1060, () => {
-  console.log('>>> Server IdP (Native Crypto) chạy thành công trên port 1060');
+  console.log('>>> Server IdP Full Encryption & Signature chạy thành công trên port 1060');
 });
