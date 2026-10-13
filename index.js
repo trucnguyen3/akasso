@@ -10,10 +10,12 @@ const { SignedXml } = require('xml-crypto');
 
 const app = express();
 
-app.use(bodyParser.urlencoded({
+app.use(express.urlencoded({
   extended: false,
   limit: '1mb'
 }));
+
+app.use(express.json());
 
 const PORT = Number(process.env.PORT || 1060);
 const DEFAULT_EMAIL = process.env.DEFAULT_SSO_EMAIL || '';
@@ -347,20 +349,69 @@ console.log('[SSO GET DEBUG]', {
 // ========================================
 
 app.post('/sso', async (req, res) => {
+  console.log('[POST /sso DEBUG]', {
+    contentType: req.headers['content-type'],
+    bodyKeys: Object.keys(req.body || {}),
+    hasSAMLRequest: typeof req.body?.SAMLRequest === 'string',
+    hasRelayState: typeof req.body?.RelayState === 'string',
+    hasEmail: Boolean(req.body?.email)
+  });
+
   try {
-    const { SAMLRequest, RelayState } = req.body;
+    const { SAMLRequest, RelayState } = req.body || {};
 
-const userEmail = String(req.body.email || '').trim();
+    const userEmail = String(
+      req.body?.email || ''
+    ).trim();
 
-console.log('[SSO EMAIL DEBUG]', {
-  received: Boolean(req.body.email),
-  emailLength: userEmail.length,
-  email: userEmail
-});
+    // Bước 1: AppsFlyer gửi AuthnRequest bằng HTTP-POST.
+    // Hiển thị form đăng nhập của IdP, không yêu cầu email
+    // trong request SAML ban đầu.
+    if (SAMLRequest && !userEmail) {
+      const samlRequestValue = htmlEscape(SAMLRequest);
+      const relayStateValue = htmlEscape(RelayState || '');
+      const defaultEmail = htmlEscape(DEFAULT_EMAIL);
 
-if (!userEmail) {
-  return res.status(400).send('Please enter your email address.');
-}
+      return res.type('html').send(`<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AKA Digital SSO</title>
+</head>
+<body>
+  <form method="POST" action="/sso"
+        style="margin:100px auto;width:360px;max-width:90%;
+        font-family:sans-serif;padding:20px;
+        border:1px solid #ccc;border-radius:8px">
+
+    <h3>AKA Digital SSO</h3>
+
+    <input type="hidden" name="SAMLRequest"
+           value="${samlRequestValue}">
+
+    <input type="hidden" name="RelayState"
+           value="${relayStateValue}">
+
+    <label for="email">Email đăng nhập:</label>
+    <input id="email" type="email" name="email"
+           value="${defaultEmail}"
+           style="width:100%;padding:8px;margin-top:5px;
+           margin-bottom:15px;box-sizing:border-box"
+           required>
+
+    <button type="submit">Tiếp tục</button>
+  </form>
+</body>
+</html>`);
+    }
+
+    // Bước 2: Người dùng submit form IdP.
+    if (!userEmail) {
+      return res.status(400).send(
+        'Please enter your email address.'
+      );
+    }
 
     // Parse AuthnRequest from AppsFlyer.
     const parsed = decodeSamlRequest(SAMLRequest);
