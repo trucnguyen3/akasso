@@ -156,7 +156,11 @@ app.post('/sso', async (req, res) => {
         'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
         'http://www.w3.org/2001/10/xml-exc-c14n#'
       ],
-      'http://www.w3.org/2001/04/xmlenc#sha256'
+      'http://www.w3.org/2001/04/xmlenc#sha256',
+      '',
+      '',
+      '',
+      true // Bật cờ này hoặc khai báo tường minh digestAlgorithm
     );
 
     sig.keyInfoProvider = {
