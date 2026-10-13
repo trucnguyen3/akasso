@@ -1,39 +1,28 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
+const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { SignedXml } = require('xml-crypto');
-const path = require('path');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 
-try {
-const privateKeyPath = path.join(__dirname, 'key.pem');
-  const certificatePath = path.join(__dirname, 'cert.pem');
+const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
+const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
 
-  const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
-  const certificate = fs.readFileSync(certificatePath, 'utf8');
+const AF_ENTITY_ID = 'https://hq1.appsflyer.com';
+const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso-callback/acc-fbb1a88f';
 
-  if (!privateKey) {
-    throw new Error("Không đọc được nội dung file key.pem!");
-  }
-  console.log('[Init] Đã nạp thành công Private Key và Certificate.');
+console.log('[Init] Khởi động ứng dụng SAML IdP cho AppsFlyer...');
 
-  const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
-  const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
-
-  const AF_ENTITY_ID = 'https://hq1.appsflyer.com';
-  const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso-callback/acc-fbb1a88f';
-
-  console.log('[Init] Khởi động AKA Digital Secure SAML IdP cho AppsFlyer...');
-
-  // 1. Endpoint Metadata
-  app.get('/metadata', (req, res) => {
-    const certClean = certificate
-      .replace(/-----(BEGIN|END) CERTIFICATE-----/g, '')
-      .replace(/[\r\n]+/g, '');
+// 1. Endpoint Metadata cho AppsFlyer đọc
+app.get('/metadata', (req, res) => {
+  try {
+    const certPath = path.join(__dirname, 'cert.pem');
+    const certificate = fs.readFileSync(certPath, 'utf8');
+    const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
     res.type('application/xml');
     res.send(`<?xml version="1.0" encoding="UTF-8"?>
@@ -52,59 +41,73 @@ const privateKeyPath = path.join(__dirname, 'key.pem');
         <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${IDP_SSO_URL}"/>
     </md:IDPSSODescriptor>
 </md:EntityDescriptor>`);
-  });
+  } catch (err) {
+    res.status(500).send('Lỗi đọc certificate metadata: ' + err.message);
+  }
+});
 
-  // 2. Giao diện Login (Tự động điền email của bạn)
-  app.get('/sso', (req, res) => {
-    const { SAMLRequest, RelayState } = req.query;
-    res.send(`
-      <form method="POST" action="/sso" style="margin: 100px auto; width: 360px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px;">
-        <h3 style="text-align: center;">AKA Digital SSO</h3>
-        <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
-        <input type="hidden" name="RelayState" value="${RelayState || ''}" />
-        <div style="margin-bottom: 15px;">
-          <label>Tài khoản đăng nhập:</label><br/>
-          <input type="text" name="email" value="truc.nguyen@akadigital.vn" style="width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box;" required />
-        </div>
-        <button type="submit" style="width: 100%; padding: 10px; background: #000; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Xác thực & Vào AppsFlyer</button>
-      </form>
-    `);
-  });
+// 2. Giao diện Login
+app.get('/sso', (req, res) => {
+  const { SAMLRequest, RelayState } = req.query;
+  res.send(`
+    <form method="POST" action="/sso" style="margin: 100px auto; width: 360px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px;">
+      <h3 style="text-align: center;">AKA Digital SSO</h3>
+      <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
+      <input type="hidden" name="RelayState" value="${RelayState || ''}" />
+      <div style="margin-bottom: 15px;">
+        <label>Tài khoản đăng nhập:</label><br/>
+        <input type="text" name="email" value="truc.nguyen@akadigital.vn" style="width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box;" required />
+      </div>
+      <button type="submit" style="width: 100%; padding: 10px; background: #000; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Xác thực & Vào AppsFlyer</button>
+    </form>
+  `);
+});
 
-  // 3. Xử lý tạo SAML Response, ký số và gửi về AppsFlyer
-  app.post('/sso', async (req, res) => {
-    const { SAMLRequest, RelayState, email } = req.body;
-    const userEmail = (email || 'truc.nguyen@akadigital.vn').trim();
+// 3. Xử lý tạo SAML Response, ký số và gửi về AppsFlyer
+app.post('/sso', async (req, res) => {
+  const { SAMLRequest, RelayState, email } = req.body;
+  const userEmail = (email || 'truc.nguyen@akadigital.vn').trim();
 
-    try {
-      let acsUrl = AF_ACS_URL;
-      let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
+  try {
+    // Đọc trực tiếp key và cert ngay trong request để đảm bảo không bị mất biến
+    const privateKeyPath = path.join(__dirname, 'key.pem');
+    const certificatePath = path.join(__dirname, 'cert.pem');
+    
+    const privateKeyRaw = fs.readFileSync(privateKeyPath, 'utf8');
+    const certificate = fs.readFileSync(certificatePath, 'utf8');
 
-      if (SAMLRequest) {
-        try {
-          const buffer = Buffer.from(SAMLRequest, 'base64');
-          let requestXml = '';
-          try { requestXml = zlib.inflateRawSync(buffer).toString('utf8'); } 
-          catch (e) { requestXml = buffer.toString('utf8'); }
+    if (!privateKeyRaw) {
+      throw new Error('File key.pem trống hoặc không đọc được!');
+    }
 
-          const acsMatch = requestXml.match(/AssertionConsumerServiceURL="([^"]+)"/);
-          if (acsMatch && acsMatch[1]) acsUrl = acsMatch[1];
+    let acsUrl = AF_ACS_URL;
+    let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
 
-          const idMatch = requestXml.match(/ID="([^"]+)"/);
-          if (idMatch && idMatch[1]) inResponseTo = idMatch[1];
-        } catch (err) {
-          console.error('Không parse được SAMLRequest, dùng ACS URL mặc định');
-        }
+    if (SAMLRequest) {
+      try {
+        const buffer = Buffer.from(SAMLRequest, 'base64');
+        let requestXml = '';
+        try { requestXml = zlib.inflateRawSync(buffer).toString('utf8'); } 
+        catch (e) { requestXml = buffer.toString('utf8'); }
+
+        const acsMatch = requestXml.match(/AssertionConsumerServiceURL="([^"]+)"/);
+        if (acsMatch && acsMatch[1]) acsUrl = acsMatch[1];
+
+        const idMatch = requestXml.match(/ID="([^"]+)"/);
+        if (idMatch && idMatch[1]) inResponseTo = idMatch[1];
+      } catch (err) {
+        console.error('Không parse được SAMLRequest, dùng ACS URL mặc định');
       }
+    }
 
-      const issueInstant = new Date().toISOString();
-      const responseId = '_' + crypto.randomBytes(16).toString('hex');
-      const assertionId = '_' + crypto.randomBytes(16).toString('hex');
-      const notOnOrAfter = new Date(Date.now() + 600000).toISOString();
-      const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
+    const issueInstant = new Date().toISOString();
+    const responseId = '_' + crypto.randomBytes(16).toString('hex');
+    const assertionId = '_' + crypto.randomBytes(16).toString('hex');
+    const notOnOrAfter = new Date(Date.now() + 600000).toISOString();
+    const certClean = certificate.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/[\r\n]+/g, '');
 
-      // Tạo Assertion XML cần ký số
-const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
+    // Tạo Assertion XML cần ký số
+    const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="${assertionId}" Version="2.0" IssueInstant="${issueInstant}">
     <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
     <saml:Subject>
         <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${userEmail}</saml:NameID>
@@ -124,39 +127,38 @@ const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:as
     </saml:AuthnStatement>
 </saml:Assertion>`;
 
-      // Thực hiện ký số Assertion bằng xml-crypto
+    // Ký số chuẩn bằng xml-crypto với crypto.createPrivateKey
     const sig = new SignedXml();
-      sig.signingKey = privateKey;
-      sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
-      sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
-      
-      sig.addReference({
-        xpath: `//*[@ID='${assertionId}']`,
-        transforms: [
-          'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
-          'http://www.w3.org/2001/10/xml-exc-c14n#'
-        ],
-        digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256'
-      });
+    sig.signingKey = crypto.createPrivateKey({
+      key: privateKeyRaw,
+      format: 'pem'
+    });
+    sig.canonicalizationAlgorithm = 'http://www.w3.org/2001/10/xml-exc-c14n#';
+    sig.signatureAlgorithm = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+    
+    sig.addReference({
+      xpath: `//*[@ID='${assertionId}']`,
+      transforms: [
+        'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
+        'http://www.w3.org/2001/10/xml-exc-c14n#'
+      ],
+      digestAlgorithm: 'http://www.w3.org/2001/04/xmlenc#sha256'
+    });
 
-      sig.keyInfoProvider = {
-        getKeyInfo: () => `<ds:X509Data><ds:X509Certificate>${certClean}</ds:X509Certificate></ds:X509Data>`
-      };
+    sig.keyInfoProvider = {
+      getKeyInfo: () => `<ds:X509Data><ds:X509Certificate>${certClean}</ds:X509Certificate></ds:X509Data>`
+    };
 
-      // Gọi computeSignature đơn giản không cần truyền location phức tạp, 
-      // xml-crypto sẽ tự động chèn chữ ký vào phần tử gốc được reference.
-      sig.computeSignature(assertionXml);
-      
-      const signedAssertion = sig.getSignatureXml();
+    sig.computeSignature(assertionXml);
+    
+    const signedAssertion = sig.getSignatureXml();
+    const finalAssertion = assertionXml.replace(
+      `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>`, 
+      `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>${signedAssertion}`
+    );
 
-      // Chèn trực tiếp chữ ký vào ngay sau thẻ Issuer trong Assertion
-      const finalAssertion = assertionXml.replace(
-        `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>`, 
-        `<saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>${signedAssertion}`
-      );
-
-      // Gói vào Response chính
-      const samlResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
+    // Gói vào Response chính
+    const samlResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
     <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
     <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
@@ -164,30 +166,26 @@ const assertionXml = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:as
     ${finalAssertion}
 </samlp:Response>`;
 
-      const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
+    const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
 
-      res.send(`
-        <html>
-          <body onload="document.forms[0].submit()">
-            <form method="POST" action="${acsUrl}">
-              <input type="hidden" name="SAMLResponse" value="${samlResponseBase64}" />
-              <input type="hidden" name="RelayState" value="${RelayState || ''}" />
-            </form>
-            <p style="text-align:center; margin-top: 50px;">Đang gửi chữ ký xác thực cho tài khoản <b>${userEmail}</b>, đang vào AppsFlyer...</p>
-          </body>
-        </html>
-      `);
+    res.send(`
+      <html>
+        <body onload="document.forms[0].submit()">
+          <form method="POST" action="${acsUrl}">
+            <input type="hidden" name="SAMLResponse" value="${samlResponseBase64}" />
+            <input type="hidden" name="RelayState" value="${RelayState || ''}" />
+          </form>
+          <p style="text-align:center; margin-top: 50px;">Đang gửi thông tin xác thực cho <b>${userEmail}</b> tới AppsFlyer...</p>
+        </body>
+      </html>
+    `);
 
-    } catch (error) {
-      console.error('[SAML Signing Error]:', error);
-      res.status(500).send('Lỗi ký số SAML: ' + error.message);
-    }
-  });
+  } catch (error) {
+    console.error('[SAML Signing Error Detail]:', error);
+    res.status(500).send('Lỗi ký số SAML: ' + error.message);
+  }
+});
 
-  app.listen(1060, () => {
-    console.log('>>> AKA Digital Secure SAML IdP đang chạy trên port 1060');
-  });
-
-} catch (setupError) {
-  console.error('[Fatal Error]:', setupError);
-}
+app.listen(1060, () => {
+  console.log('>>> Server IdP chạy thành công trên port 1060');
+});
