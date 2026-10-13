@@ -160,6 +160,7 @@ app.post('/sso', async (req, res) => {
       xmlEncryption.encrypt(signedAssertion, {
         rsa_encryption: 'http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p',
         aes_encryption: 'http://www.w3.org/2001/04/xmlenc#aes128-cbc',
+        rsa_pub: afEncryptionKey,
         pem: afEncryptionKey,
         key_info_include_cert: true
       }, (err, encrypted) => {
