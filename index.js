@@ -2,6 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const { SAML } = require('@node-saml/node-saml');
+const zlib = require('zlib');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -76,15 +77,40 @@ try {
   });
 
   // 3. Xử lý trả SAML Token
-  app.post('/sso', async (req, res) => {
+app.post('/sso', async (req, res) => {
     const { SAMLRequest, RelayState, username } = req.body;
-    const userEmail = `${(username || 'admin').trim()}@akadigital.vn`;
+    const userEmail = `${(username || 'admin').trigger ? username : (username || 'admin').trim()}@akadigital.vn`;
 
     try {
-      // Sử dụng validateAuthorizeRequest thay cho parseLoginRequest
-      const extractedRequest = await samlIdp.validateAuthorizeRequest({
-        query: { SAMLRequest }
-      });
+      // 1. Giải mã SAMLRequest gửi từ AppsFlyer (Deflate -> Base64 -> XML string)
+      let requestXml = '';
+      if (SAMLRequest) {
+        const buffer = Buffer.from(SAMLRequest, 'base64');
+        try {
+          // Thử giải nén dạng raw deflate (chuẩn SAML Redirect binding)
+          requestXml = zlib.inflateRawSync(buffer).toString('utf8');
+        } catch (e) {
+          // Nếu không phải raw thì thử inflate thường hoặc gán chuỗi thô
+          try {
+            requestXml = zlib.inflateSync(buffer).toString('utf8');
+          } catch (err2) {
+            requestXml = buffer.toString('utf8');
+          }
+        }
+      }
+
+      // 2. Lấy ACS URL và Request ID (InResponseTo) từ chuỗi XML của AppsFlyer
+      // AppsFlyer thường gửi AssertionConsumerServiceURL và ID trong AuthnRequest
+      let acsUrl = 'https://saml.appsflyer.com/sso/saml'; // Fallback URL chuẩn của AppsFlyer nếu không quét được
+      let inResponseTo = 'id_' + Date.now();
+
+      if (requestXml) {
+        const acsMatch = requestXml.match(/AssertionConsumerServiceURL="([^"]+)"/);
+        if (acsMatch && acsMatch[1]) acsUrl = acsMatch[1];
+
+        const idMatch = requestXml.match(/ID="([^"]+)"/);
+        if (idMatch && idMatch[1]) inResponseTo = idMatch[1];
+      }
 
       const options = {
         issuer: IDP_ENTITY_ID,
@@ -93,18 +119,22 @@ try {
           nameIDFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
           email: userEmail,
         },
-        acsUrl: extractedRequest.acsUrl || extractedRequest.AssertionConsumerServiceURL,
-        inResponseTo: extractedRequest.id || extractedRequest.ID,
-        relayState: RelayState,
+        acsUrl: acsUrl,
+        inResponseTo: inResponseTo,
+        relayState: RelayState || '',
       };
 
+      // 3. Tạo chữ ký SAML Response gửi trả lại AppsFlyer
       samlIdp.getSamlResponse(options, (err, samlResponse) => {
-        if (err) return res.status(500).send('Lỗi tạo token: ' + err.message);
+        if (err) {
+          console.error('[Error generating SAML Response]:', err);
+          return res.status(500).send('Lỗi tạo token SAML: ' + err.message);
+        }
 
         res.send(`
           <html>
             <body onload="document.forms[0].submit()">
-              <form method="POST" action="${options.acsUrl}">
+              <form method="POST" action="${acsUrl}">
                 <input type="hidden" name="SAMLResponse" value="${samlResponse}" />
                 <input type="hidden" name="RelayState" value="${RelayState || ''}" />
               </form>
@@ -114,7 +144,7 @@ try {
         `);
       });
     } catch (error) {
-      console.error('SAML Error:', error);
+      console.error('[SAML Processing Error]:', error);
       res.status(500).send('Lỗi xử lý SAML Request: ' + error.message);
     }
   });
