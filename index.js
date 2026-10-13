@@ -1,4 +1,5 @@
 'use strict';
+require('dotenv').config();
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -493,7 +494,13 @@ app.post('/sso', async (req, res) => {
       xmlEscape(responseId);
 
     const assertionIdXml =
-      xmlEscape(assertionId);
+          xmlEscape(assertionId);
+      
+      console.log('[SSO CONFIG]', {
+  IDP_PUBLIC_URL: process.env.IDP_PUBLIC_URL,
+  APPSFLYER_ACS_URL: process.env.APPSFLYER_ACS_URL,
+  APPSFLYER_SP_ENTITY_ID: process.env.APPSFLYER_SP_ENTITY_ID
+});
 
     const xmlUnsigned = `<?xml version="1.0" encoding="UTF-8"?>
 <samlp:Response
