@@ -81,7 +81,8 @@ try {
     const userEmail = `${(username || 'admin').trim()}@akadigital.vn`;
 
     try {
-      const extractedRequest = await samlIdp.parseLoginRequest({
+      // Sử dụng validateAuthorizeRequest thay cho parseLoginRequest
+      const extractedRequest = await samlIdp.validateAuthorizeRequest({
         query: { SAMLRequest }
       });
 
@@ -92,8 +93,8 @@ try {
           nameIDFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
           email: userEmail,
         },
-        acsUrl: extractedRequest.acsUrl,
-        inResponseTo: extractedRequest.id,
+        acsUrl: extractedRequest.acsUrl || extractedRequest.AssertionConsumerServiceURL,
+        inResponseTo: extractedRequest.id || extractedRequest.ID,
         relayState: RelayState,
       };
 
@@ -103,7 +104,7 @@ try {
         res.send(`
           <html>
             <body onload="document.forms[0].submit()">
-              <form method="POST" action="${extractedRequest.acsUrl}">
+              <form method="POST" action="${options.acsUrl}">
                 <input type="hidden" name="SAMLResponse" value="${samlResponse}" />
                 <input type="hidden" name="RelayState" value="${RelayState || ''}" />
               </form>
@@ -113,6 +114,7 @@ try {
         `);
       });
     } catch (error) {
+      console.error('SAML Error:', error);
       res.status(500).send('Lỗi xử lý SAML Request: ' + error.message);
     }
   });
