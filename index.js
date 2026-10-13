@@ -10,21 +10,23 @@ try {
   const privateKey = fs.readFileSync('./key.pem', 'utf8');
   const certificate = fs.readFileSync('./cert.pem', 'utf8');
 
-  const IDP_ENTITY_ID = 'https://uat1.akadigital.net/sso-idp/metadata';
-  const IDP_SSO_URL = 'https://uat1.akadigital.net/sso-idp/sso';
+  // Đổi sang đúng subdomain mới lập
+  const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
+  const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
 
   console.log('[Init] Đang cấu hình SAML IdP...');
 
   const samlIdp = new SAML({
     issuer: IDP_ENTITY_ID,
-    idpCert: certificate,     // Đổi từ 'cert' thành 'idpCert'
-    privateKey: privateKey,    // Giữ nguyên privateKey để ký Assertion
+    idpCert: certificate,
+    privateKey: privateKey,
     digestAlgorithm: 'sha256',
     signatureAlgorithm: 'rsa-sha256',
     callbackUrl: IDP_SSO_URL,
   });
 
-app.get('/metadata', (req, res) => {
+  // 1. Endpoint Metadata
+  app.get('/metadata', (req, res) => {
     try {
       const certClean = certificate
         .replace(/-----(BEGIN|END) CERTIFICATE-----/g, '')
@@ -53,7 +55,7 @@ app.get('/metadata', (req, res) => {
     }
   });
 
-  // 2. Giao diện Login (bỏ /sso-idp đi)
+  // 2. Giao diện Login
   app.get('/sso', (req, res) => {
     const { SAMLRequest, RelayState } = req.query;
     res.send(`
@@ -73,7 +75,7 @@ app.get('/metadata', (req, res) => {
     `);
   });
 
-  // 3. Xử lý trả SAML Token (bỏ /sso-idp đi)
+  // 3. Xử lý trả SAML Token
   app.post('/sso', async (req, res) => {
     const { SAMLRequest, RelayState, username } = req.body;
     const userEmail = `${(username || 'admin').trim()}@akadigital.vn`;
