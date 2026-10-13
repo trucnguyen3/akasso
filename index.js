@@ -350,20 +350,17 @@ app.post('/sso', async (req, res) => {
   try {
     const { SAMLRequest, RelayState } = req.body;
 
-    const userEmail = String(
-      req.body.email || ''
-    ).trim();
+const userEmail = String(req.body.email || '').trim();
 
-    if (
-      !userEmail ||
-      !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(
-        userEmail
-      )
-    ) {
-      return res.status(400).send(
-        'Invalid email address.'
-      );
-    }
+console.log('[SSO EMAIL DEBUG]', {
+  received: Boolean(req.body.email),
+  emailLength: userEmail.length,
+  email: userEmail
+});
+
+if (!userEmail) {
+  return res.status(400).send('Please enter your email address.');
+}
 
     // Parse AuthnRequest from AppsFlyer.
     const parsed = decodeSamlRequest(SAMLRequest);
