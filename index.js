@@ -11,10 +11,15 @@ try {
   const privateKey = fs.readFileSync('./key.pem', 'utf8');
   const certificate = fs.readFileSync('./cert.pem', 'utf8');
 
+  // Thông tin IdP của bạn
   const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
   const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
 
-  console.log('[Init] Khởi động AKA Digital SAML IdP chuẩn xác...');
+  // LẤY TRỰC TIẾP TỪ FILE XML HOẶC METADATA COMPONENTS CỦA APPSFLYER
+  const AF_ENTITY_ID = 'https://hq1.appsflyer.com'; // Hoặc giá trị Entity ID từ AppsFlyer metadata của bạn
+  const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso-callback/acc-fbb1a88f'; // Thay thế đúng URL callback từ AppsFlyer
+
+  console.log('[Init] Khởi động AKA Digital SAML IdP chuẩn cho AppsFlyer...');
 
   // 1. Endpoint Metadata cho AppsFlyer đọc
   app.get('/metadata', (req, res) => {
@@ -41,63 +46,55 @@ try {
 </md:EntityDescriptor>`);
   });
 
-  // 2. Giao diện Login yêu cầu nhập tài khoản @akadigital.vn
+  // 2. Giao diện Login
   app.get('/sso', (req, res) => {
     const { SAMLRequest, RelayState } = req.query;
     res.send(`
-      <form method="POST" action="/sso" style="margin: 100px auto; width: 320px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-        <h3 style="text-align: center; margin-bottom: 20px;">AKA Digital SSO</h3>
+      <form method="POST" action="/sso" style="margin: 100px auto; width: 320px; font-family: sans-serif; padding: 20px; border: 1px solid #ccc; border-radius: 8px;">
+        <h3 style="text-align: center;">AKA Digital SSO</h3>
         <input type="hidden" name="SAMLRequest" value="${SAMLRequest || ''}" />
         <input type="hidden" name="RelayState" value="${RelayState || ''}" />
         <div style="margin-bottom: 15px;">
-          <label style="font-size: 14px; color: #555;">Tên tài khoản nội bộ:</label><br/>
+          <label>Tên tài khoản:</label><br/>
           <div style="display: flex; align-items: center; margin-top: 5px;">
-            <input type="text" name="username" value="admin" style="flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required />
-            <span style="margin-left: 8px; font-weight: bold; color: #333;">@akadigital.vn</span>
+            <input type="text" name="username" value="admin" style="flex: 1; padding: 8px;" required />
+            <span style="margin-left: 5px; font-weight: bold;">@akadigital.vn</span>
           </div>
         </div>
-        <button type="submit" style="width: 100%; padding: 10px; background: #000; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Đăng nhập AppsFlyer</button>
+        <button type="submit" style="width: 100%; padding: 10px; background: #000; color: #fff; border: none; border-radius: 4px; cursor: pointer;">Đăng nhập AppsFlyer</button>
       </form>
     `);
   });
 
-  // 3. Xử lý giải mã yêu cầu từ AppsFlyer và trả về SAML Response
+  // 3. Xử lý trả SAML Response
   app.post('/sso', async (req, res) => {
     const { SAMLRequest, RelayState, username } = req.body;
     const userEmail = `${(username || 'admin').trim()}@akadigital.vn`;
 
     try {
-      let acsUrl = 'https://hq1.appsflyer.com/auth/sso-metadata?acc-id=acc-fbb1a88f';
-      const APPSFLYER_ENTITY_ID = 'https://hq1.appsflyer.com';
+      let acsUrl = AF_ACS_URL;
       let inResponseTo = '_' + crypto.randomBytes(16).toString('hex');
 
-      // Giải mã SAMLRequest từ AppsFlyer gửi sang qua phương thức Deflate / Base64
       if (SAMLRequest) {
         try {
           const buffer = Buffer.from(SAMLRequest, 'base64');
-          let requestXml = '';
-          try { 
-            requestXml = zlib.inflateRawSync(buffer).toString('utf8'); 
-          } catch (e) { 
-            requestXml = buffer.toString('utf8'); 
-          }
-
+          let requestXml = zlib.inflateRawSync(buffer).toString('utf8');
+          
           const acsMatch = requestXml.match(/AssertionConsumerServiceURL="([^"]+)"/);
           if (acsMatch && acsMatch[1]) acsUrl = acsMatch[1];
 
           const idMatch = requestXml.match(/ID="([^"]+)"/);
           if (idMatch && idMatch[1]) inResponseTo = idMatch[1];
-        } catch (err) {
-          console.error('Không parse được SAMLRequest, sử dụng ACS URL mặc định');
+        } catch (e) {
+          // Fallback nếu không inflate được
         }
       }
 
       const issueInstant = new Date().toISOString();
       const responseId = '_' + crypto.randomBytes(16).toString('hex');
       const assertionId = '_' + crypto.randomBytes(16).toString('hex');
-      const notOnOrAfter = new Date(Date.now() + 600000).toISOString(); // Hiệu lực 10 phút
+      const notOnOrAfter = new Date(Date.now() + 600000).toISOString();
 
-      // Tạo XML Response chuẩn SAML 2.0 phản hồi về AppsFlyer
       const samlResponseXml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${responseId}" Version="2.0" IssueInstant="${issueInstant}" Destination="${acsUrl}" InResponseTo="${inResponseTo}">
     <saml:Issuer>${IDP_ENTITY_ID}</saml:Issuer>
     <samlp:Status>
@@ -113,7 +110,7 @@ try {
         </saml:Subject>
         <saml:Conditions NotBefore="${issueInstant}" NotOnOrAfter="${notOnOrAfter}">
             <saml:AudienceRestriction>
-                <saml:Audience>${APPSFLYER_ENTITY_ID}</saml:Audience>
+                <saml:Audience>${AF_ENTITY_ID}</saml:Audience>
             </saml:AudienceRestriction>
         </saml:Conditions>
         <saml:AuthnStatement AuthnInstant="${issueInstant}" SessionIndex="${assertionId}">
@@ -124,7 +121,6 @@ try {
     </saml:Assertion>
 </samlp:Response>`;
 
-      // Encode Base64 chuỗi SAML Response để Auto-submit form về AppsFlyer
       const samlResponseBase64 = Buffer.from(samlResponseXml).toString('base64');
 
       res.send(`
@@ -134,21 +130,20 @@ try {
               <input type="hidden" name="SAMLResponse" value="${samlResponseBase64}" />
               <input type="hidden" name="RelayState" value="${RelayState || ''}" />
             </form>
-            <p style="text-align:center; margin-top: 50px; font-family: sans-serif;">Đang xác thực tài khoản <b>${userEmail}</b> và chuyển hướng về AppsFlyer...</p>
+            <p style="text-align:center; margin-top: 50px;">Đang chuyển hướng về AppsFlyer...</p>
           </body>
         </html>
       `);
 
     } catch (error) {
-      console.error('[SAML Processing Error]:', error);
-      res.status(500).send('Lỗi xử lý SAML: ' + error.message);
+      res.status(500).send('Lỗi: ' + error.message);
     }
   });
 
   app.listen(1060, () => {
-    console.log('>>> AKA Digital SAML IdP đang chạy thành công trên port 1060');
+    console.log('>>> Chạy thành công trên port 1060');
   });
 
-} catch (setupError) {
-  console.error('[Fatal Error]:', setupError);
+} catch (err) {
+  console.error('Lỗi khởi động:', err);
 }
