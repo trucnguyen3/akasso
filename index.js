@@ -13,7 +13,7 @@ const IDP_ENTITY_ID = 'https://sso-uat1.akadigital.net/metadata';
 const IDP_SSO_URL = 'https://sso-uat1.akadigital.net/sso';
 
 const AF_ENTITY_ID = 'https://hq1.appsflyer.com';
-const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso/saml/callback';
+const AF_ACS_URL = 'https://hq1.appsflyer.com/auth/sso-callback/acc-fbb1a88f';
 
 console.log('[Init] Khởi động Server IdP (Hỗ trợ Ký số & Mã hóa AppsFlyer)...');
 
@@ -160,7 +160,7 @@ app.post('/sso', async (req, res) => {
       xmlEncryption.encrypt(signedAssertion, {
         rsa_encryption: 'http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p',
         aes_encryption: 'http://www.w3.org/2001/04/xmlenc#aes128-cbc',
-        rsa_pub: afEncryptionKey,
+        pem: afEncryptionKey,
         key_info_include_cert: true
       }, (err, encrypted) => {
         if (err) reject(err);
