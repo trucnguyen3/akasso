@@ -491,6 +491,12 @@ app.post('/sso', async (req, res) => {
     req.body?.email || ''
   ).trim();
 
+  console.info('[DEBUG SSO FORM]', {
+  bodyKeys: Object.keys(req.body || {}),
+  email: userEmail || '(empty)',
+  contentType: req.headers['content-type']
+});
+
   console.info('[POST /sso]', {
     hasSAMLRequest: typeof SAMLRequest === 'string' && Boolean(SAMLRequest),
     hasRelayState: typeof RelayState === 'string' && Boolean(RelayState),
