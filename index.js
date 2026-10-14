@@ -442,25 +442,42 @@ app.get('/sso', (req, res) => {
     );
   }
 
-  if (!DEFAULT_EMAIL) {
-    return res.status(500).send(
-      'Missing DEFAULT_SSO_EMAIL configuration.'
-    );
-  }
+const escapeHtml = (value = '') =>
+    String(value).replace(/[&<>"']/g, char => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    })[char]);
 
-  // UAT flow: no IdP email form; show loading and auto-submit.
-  return res.type('html').send(
-    renderAutoSubmitPage({
-      action: '/sso',
-      fields: {
-        SAMLRequest,
-        RelayState,
-        email: DEFAULT_EMAIL
-      },
-      title: 'Signing in to AppsFlyer...',
-      message: 'Please wait while we process your sign-in.'
-    })
-  );
+  return res.type('html').send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in to AppsFlyer</title>
+</head>
+<body style="font:16px Arial,sans-serif;max-width:420px;margin:80px auto;padding:24px">
+  <h2>Sign in to AppsFlyer</h2>
+  <form method="POST" action="/sso">
+    <input type="hidden" name="SAMLRequest"
+      value="${escapeHtml(SAMLRequest)}">
+    <input type="hidden" name="RelayState"
+      value="${escapeHtml(RelayState)}">
+
+    <label for="email">Work email</label>
+    <input id="email" type="email" name="email" required
+      autocomplete="username"
+      placeholder="you@company.com"
+      style="display:block;box-sizing:border-box;width:100%;padding:12px;margin:8px 0 16px">
+
+    <button type="submit" style="padding:12px 20px">
+      Continue
+    </button>
+  </form>
+</body>
+</html>`);
 });
 
 // ========================================
