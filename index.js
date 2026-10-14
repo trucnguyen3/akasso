@@ -95,6 +95,10 @@ function normalizeIp(ip = "") {
 }
 
 app.use("/sso", (req, res, next) => {
+    console.log("Allowed IPs:", [...allowedIps]);
+  console.log("req.ip:", req.ip);
+  console.log("remoteAddress:", req.socket.remoteAddress);
+  console.log("x-forwarded-for:", req.headers["x-forwarded-for"]);
   const clientIp = normalizeIp(req.ip);
 
   if (!allowedIps.has(clientIp)) {
