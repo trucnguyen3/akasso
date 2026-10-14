@@ -95,16 +95,22 @@ const allowedIps = new Set(
     .filter(Boolean)
 );
 
-function ssoIpAllowlist(req, res, next) {
-  const clientIp = getClientIp(req);
+function normalizeIp(ip = "") {
+  return ip.replace(/^::ffff:/, "");
+}
+
+app.use("/sso", (req, res, next) => {
+  const clientIp = normalizeIp(req.ip);
 
   if (!allowedIps.has(clientIp)) {
-    console.warn(`[SSO DENIED] IP=${clientIp}`);
-    return res.status(403).send("Access denied: IP not allowed");
+    console.warn(`[SSO BLOCKED] IP=${clientIp}`);
+    return res.status(403).send(
+      "SSO access denied: please connect to the company Wi-Fi."
+    );
   }
 
   next();
-}
+});
 
 // Áp dụng cho cả GET và POST /sso
 app.use("/sso", ssoIpAllowlist);
