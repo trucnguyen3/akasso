@@ -487,7 +487,7 @@ const escapeHtml = (value = '') =>
 app.post('/sso', async (req, res) => {
   const { SAMLRequest, RelayState } = req.body || {};
 
-  const userEmail = String(
+  let userEmail = String(
     req.body?.email || ''
   ).trim();
 
