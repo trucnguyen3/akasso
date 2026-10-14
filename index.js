@@ -491,12 +491,6 @@ app.post('/sso', async (req, res) => {
     req.body?.email || ''
   ).trim();
 
-  console.info('[DEBUG SSO FORM]', {
-  bodyKeys: Object.keys(req.body || {}),
-  email: userEmail || '(empty)',
-  contentType: req.headers['content-type']
-});
-
   console.info('[POST /sso]', {
     hasSAMLRequest: typeof SAMLRequest === 'string' && Boolean(SAMLRequest),
     hasRelayState: typeof RelayState === 'string' && Boolean(RelayState),
@@ -514,11 +508,25 @@ app.post('/sso', async (req, res) => {
     }
 
     // Fallback if POST was started directly without email.
-    if (!userEmail) {
-      return res.status(400).send(
-        'Missing email. Please go back and enter your work email.'
-      );
+    if (!userEmail && typeof RelayState === 'string' && RelayState) {
+      try {
+        const params = new URLSearchParams(
+          RelayState.startsWith('?')
+            ? RelayState.slice(1)
+            : RelayState
+        );
+
+        userEmail = String(params.get('email') || '').trim();
+      } catch (error) {
+        console.warn('[SSO] Cannot parse RelayState email');
+      }
     }
+
+    console.info('[DEBUG SSO FORM]', {
+      bodyKeys: Object.keys(req.body || {}),
+      email: userEmail || '(empty)',
+      hasRelayState: Boolean(RelayState)
+    });
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
       return res.status(400).send('Invalid email address.');
