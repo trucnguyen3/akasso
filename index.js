@@ -52,6 +52,8 @@ loadEnvFile(path.join(__dirname, '.env'));
 
 const app = express();
 
+app.set("trust proxy", "loopback");
+
 app.use(express.urlencoded({
   extended: false,
   limit: '1mb'
@@ -95,11 +97,9 @@ function normalizeIp(ip = "") {
 }
 
 app.use("/sso", (req, res, next) => {
-    console.log("Allowed IPs:", [...allowedIps]);
-  console.log("req.ip:", req.ip);
-  console.log("remoteAddress:", req.socket.remoteAddress);
-  console.log("x-forwarded-for:", req.headers["x-forwarded-for"]);
   const clientIp = normalizeIp(req.ip);
+
+  console.log("Client IP:", clientIp);
 
   if (!allowedIps.has(clientIp)) {
     console.warn(`[SSO BLOCKED] IP=${clientIp}`);
