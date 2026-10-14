@@ -497,6 +497,11 @@ app.post('/sso', async (req, res) => {
     hasEmail: Boolean(userEmail)
   });
 
+  console.info('[DEBUG RelayState]', {
+    type: typeof RelayState,
+    value: JSON.stringify(RelayState)
+  });
+
   try {
     if (
       !SAMLRequest ||
@@ -510,15 +515,21 @@ app.post('/sso', async (req, res) => {
     // Fallback if POST was started directly without email.
     if (!userEmail && typeof RelayState === 'string' && RelayState) {
       try {
-        const params = new URLSearchParams(
-          RelayState.startsWith('?')
-            ? RelayState.slice(1)
-            : RelayState
-        );
+        const raw = RelayState.trim();
 
+        // Hỗ trợ cả "?email=..." và URL đầy đủ
+        const query = raw.includes('?')
+          ? raw.slice(raw.indexOf('?') + 1)
+          : raw.replace(/^\?/, '');
+
+        const params = new URLSearchParams(query);
         userEmail = String(params.get('email') || '').trim();
+
+        console.info('[DEBUG RelayState parse]', {
+          foundEmail: Boolean(userEmail)
+        });
       } catch (error) {
-        console.warn('[SSO] Cannot parse RelayState email');
+        console.error('[SSO] RelayState parsing failed:', error.message);
       }
     }
 
