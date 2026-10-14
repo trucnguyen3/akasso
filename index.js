@@ -515,23 +515,8 @@ app.post('/sso', async (req, res) => {
 
     // Fallback if POST was started directly without email.
     if (!userEmail) {
-      if (!DEFAULT_EMAIL) {
-        return res.status(500).send(
-          'Missing DEFAULT_SSO_EMAIL configuration.'
-        );
-      }
-
-      return res.type('html').send(
-        renderAutoSubmitPage({
-          action: '/sso',
-          fields: {
-            SAMLRequest,
-            RelayState: typeof RelayState === 'string' ? RelayState : '',
-            email: DEFAULT_EMAIL
-          },
-          title: 'Signing in to AppsFlyer...',
-          message: 'Please wait while we process your sign-in.'
-        })
+      return res.status(400).send(
+        'Missing email. Please go back and enter your work email.'
       );
     }
 
